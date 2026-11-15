@@ -1,127 +1,27 @@
-# AVerMedia Live Gamer Extreme (GC550) Linux Kernel Module (`gc550.ko`)
+# AVerMedia Live Gamer Extreme (GC550) Linux Kernel Driver (`gc550.ko`)
 
 > **Fork Notice & Credits:** This repository is a Linux kernel-level fork of [**`ChrisAJS/lgx2userspace`**](https://github.com/ChrisAJS/lgx2userspace) by **Chris Sawczuk ([@ChrisAJS](https://github.com/ChrisAJS))** and contributors. Building directly upon their USB 3.0 protocol reverse-engineering, [`PROTOCOL.md`](PROTOCOL.md) specification, and hardware bootstrap research, this project implements a **native Linux kernel driver (`V4L2` + `ALSA`)** for the **AVerMedia Live Gamer Extreme (GC550, `USB ID 07ca:4710` / `07ca:0550`)**.
 
-PLEASE also note that this kernel module is under HEAVY development (I CAN confirm it works in QEMU running a CachyOS VM and on bare metal running the same versions, more on that in the TODO.md file) and, like MANY projects on GitHub, comes with NO WARRANTY and NO SUPPORT!
-
-Q: Why make a kernel module if a userspace driver exists?
-
-A; Well, good question. The long answer is that I had Google Antigravity make me a kernel module; it based its work on Chris Sawczuk's work without my prior knowledge, resulting in two potentially equal things. Of course, I had Antigravity properly credit everyone involved in the project, but on further reflection, that wasn't enough, so I forked his repo and moved my kernel module to his fork, properly crediting his work.
-
-Q: If it was a "mistake", why keep it at all?
-
-A: I spent tokens on this, and logically there should be performance benefits of having the module in the kernel instead of userspace (Spoiler warning: there is). Badly written kernel modules CAN start race conditions, leading to an unstable kernel, more or less breaking your system, so as I said above **PROCEED AT YOUR OWN RISK**
-
-Q: Wait—if this driver is for the original LGX (GC550), why is the repo named `lgx2KernelLevel`?
-
-A: Think of the `2` as **"to"** — **`LGX-to-KernelLevel`** (playing off upstream's `lgx2userspace`), not `LGX2-KernelLevel`! (For the LGX2 / GC551, use `@ChrisAJS`'s upstream [`lgx2userspace`](https://github.com/ChrisAJS/lgx2userspace)).
+Native, out-of-tree Linux kernel module providing plug-and-play video (`V4L2`) and audio (`ALSA`) capture for the AVerMedia Live Gamer Extreme (GC550) over USB 3.0 SuperSpeed.
 
 ---
 
-## Verified Baseline & Hardware Test Environment
+## Quick Hardware & Feature Summary
 
-The active verified baseline for this driver is **Phase E1.5.2.2 / E1.6**:
-- **Baseline Git Commit**: `8744e8628d2822e2419f5326795bf046d2e94160` (branch `main`)
-- **Module `srcversion`**: `27D8CAC60C62239C91B8BFC`
-- **Module SHA256**: `b795b207d573eaadbe23f553d25dca40a29ba5d03898b148d38c689fffa7bb97`
-- **Primary Test Platform (`Titan`)**: Bare-metal AMD Ryzen 9 5900X (12C/24T), Radeon RX 9070 XT, 32 GB DDR4, CachyOS kernel `7.3.3-1-cachyos` (x86_64), Clang/LLVM 19.
-- **Secondary Test Platform (`Niri`)**: Bare-metal Intel Core i7 laptop, CachyOS kernel `7.3.1-1-cachyos` (x86_64), Clang/LLVM 19.
-- **V4L2 Compliance (`v4l2-compliance 1.32.0`)**:
-  - Non-streaming tests: **48 passed**, 0 failed.
-  - Streaming tests (MMAP, USERPTR): **57 passed**, 0 failed, 0 warnings.
-  - DMABUF export (`--expbuf-device`): **Unverified**.
-- **Phase E1.6 Hardware Test Results (Titan)**:
-  - **30-Minute Endurance Capture (TE-01)**: **108,000 frames dequeued**, 108,001 driver-observed, 0 dropped, 0 mid-stream desyncs over 1,799.985 s at 60.001 fps (345,598,308 audio bytes parsed).
-  - **Multi-Resolution Functional Checks (TR-01..TR-05)**: Short functional smoke tests across all five supported resolutions (1080p60 [300 frames], 720p60 [62 frames], 576p50 [51 frames], 480p60 [60 frames], 640x480p60 [62 frames]) with dynamically matched Raspberry Pi HDMI source modes; all captured cleanly without mid-stream errors (the four shorter captures are functional smoke tests, not full 300-frame endurance tests).
-  - **Simultaneous Video & Audio Capture (TS-01)**: 1,800 video frames and 5,750,784 PCM bytes over 30.0 seconds, demonstrating **99.84% audio/video duration correspondence** during simultaneous capture (measures duration alignment; lip-sync / AV sync accuracy has not been independently measured).
-  - **Physical Hot-Unplug / Reconnect**: **NOT TESTED** under active streaming (software interface unbind/bind evaluated; physical cable unplug during active streaming remains unverified).
-
----
-
-## Hardware Compatibility Matrix
-
-| Device Model | USB ID (`VID:PID`) | Driver Status | Notes |
-|---|---|---|---|
-| **AVerMedia Live Gamer Extreme (GC550 / LGX)** | `07ca:4710` | **Supported & Bare-Metal Verified** | Primary GC550 hardware revision (`bcdDevice 2.07`). Runtime-verified on the Niri test laptop (CachyOS `7.3.1-1-cachyos` Clang) for 3.6+ hours continuous `1080p60` (`776,295` frames, `0` desyncs) + `48 kHz` ALSA audio; DKMS build also verified against `6.18.55-2-cachyos-lts` (GCC). |
-| **AVerMedia Live Gamer Extreme (GC550 / LGX)** | `07ca:0550` | **Supported (Alias Included)** | Alternate USB Product ID documented for GC550 hardware. Uses identical USB endpoints and I2C map. |
-| **AVerMedia Live Gamer Extreme 2 (GC551 / LGX2)** | `07ca:0551` | **Not Supported in `gc550.ko`** | Uses an ITE IT6664 HDMI 2.0 4K front-end splitter (`0x2C`/`0x58`). Use upstream [**`ChrisAJS/lgx2userspace`**](https://github.com/ChrisAJS/lgx2userspace) for GC551. |
-| **AVerMedia Live Gamer Ultra (GC553)** | `07ca:0553` | **N/A (Standard UVC)** | Works out-of-the-box with the mainline Linux `uvcvideo` driver. |
-
-### HDMI Input Source Compatibility
-
-| Source Signal Type | Status | Details |
+| Component | Status | Details |
 |---|---|---|
-| **1920×1080p, 1280×720p, 720×576p, 720×480p, 640×480p (SDR)** | **Supported & Verified** | Uncompressed `YUYV` 4:2:2 (Rec. 709 limited range). Short functional captures (100–120 frames per mode + manual OBS format matching) verified on Niri (`7.3.1-1-cachyos`) with a Raspberry Pi 3B across 1080p60, 720p60, 576p50, 480p59.94, and 640×480p60; long-duration (3.6+ hr) endurance testing has only been performed at 1080p60 on Niri. |
-| **RGB & YCbCr 4:4:4 / 4:2:2 Sources (SDR)** | **Supported** | `ADV7604 IO[0x02]` is automatically set to `0xF` (auto color-space selection from HDMI AVI InfoFrame). |
-| **HDR10 / HLG / Dolby Vision (BT.2020)** | **Unsupported (Hardware Limit)** | The GC550 uses an HDMI 1.4a 8-bit SDR receiver (`ADV7604`). Turn **HDR OFF** on your source console/PC. |
-| **HDCP-Protected HDMI Sources** | **Unsupported (By Design)** | Encrypted HDCP streams (e.g. PS4/PS5 with HDCP enabled, MacBooks) cannot be captured. Disable HDCP in console settings. |
-
----
-
-## Features & Architecture
-
-Instead of requiring a background `libusb` daemon and `v4l2loopback`, `gc550.ko` registers the AVerMedia Live Gamer Extreme (GC550) directly with the Linux kernel media and sound subsystems as soon as you plug it into a USB 3.0 port:
-
-- **Native V4L2 Video Capture (`/dev/videoX` & `/dev/avermedia-gc550`)**:
-  - Exposes a standard `videobuf2-vmalloc` V4L2 capture node compatible out-of-the-box with **OBS Studio**, **FFmpeg**, **mpv**, and **GStreamer**.
-  - Exposes uncompressed `YUYV` / `YUY2` 4:2:2 capture at `1920x1080`, `1280x720`, `720x576`, `720x480`, and `640x480` (Rec. 709 limited range). Select the V4L2/OBS source size to match the active HDMI input.
-- **Native ALSA Audio Capture (`hw:GC550Audio,0`)**:
-  - Demultiplexes embedded HDMI LPCM stereo audio (`48 kHz`, `16-bit Little-Endian`) directly from USB Bulk Endpoint `0x83 IN` into an ALSA capture card (automatically picked up by PipeWire / PulseAudio).
-- **Complete Hardware Wake-Up & Passthrough Support**:
-  - Programs the internal **ADV7604** HDMI receiver (including 1080p60 EDID RAM), **ADV7511** HDMI passthrough transmitter, **TLV320AIC3x** analog audio codec, **Lattice ECP3** FPGA, and **PCA9539A** GPIO expander over the FX3 USB-to-I2C bridge (`EP 0x01 OUT` / `EP 0x81 IN`).
-  - Automatically configures the ADV7604 input colour space (`IO 0x02`) to match RGB or YCbCr HDMI sources and resets picture brightness/contrast adjustments to neutral.
-  - **AT88SC CryptoMemory Protection**: Completely omits proprietary anti-clone authentication replays from the initialization table and enforces a runtime filter (`-EPERM`) in `gc550_cmd_send()` (`kernel/gc550-cmd.c`) blocking bridge opcodes `0x05..0x07` and `0x09` so hardware attempt counters remain untouched (`0xFF`).
-- **Stream Resilience**:
-  - **Cross-URB Marker Straddle Reassembly**: Tracks partial `[00 FF FF]` SAV/EAV/Audio markers across USB transfer boundaries so frames never drop or misalign.
-  - **16 KiB FX3 DMA Swap Reorderer**: Automatically detects and un-swaps 16 KiB ping-pong DMA buffers if the FX3 flips buffer phase on warm restarts.
-
----
-
-## Performance, Latency & Architectural Payoff
-
-While upstream [`ChrisAJS/lgx2userspace`](https://github.com/ChrisAJS/lgx2userspace) provides a great cross-platform SDL3/`libusb` application, moving the GC550 stream parser into a Linux kernel driver (`gc550.ko`) provides measurable latency, memory-bandwidth, and integration benefits when capturing into V4L2/PipeWire applications like **OBS Studio**:
-
-### 1. Glass-to-Glass Latency Target (`<= 50 ms`) & Historical Niri Measurement (`50 ms` / 3 Frames @ 60 Hz)
-The project target is **no more than `50 ms` end-to-end glass-to-glass latency** (and lower where possible without sacrificing stability). In a point-in-time test on the **Niri** test laptop (CachyOS `7.3.1-1-cachyos`, KWin/Wayland) using a millisecond count-up timer comparing the GC550's `HDMI OUT` passthrough on a TV (`50.283 s`) against a live `mpv` V4L2 preview window flushed to the live edge (`50.233 s`):
-- **Observed Glass-to-Glass Delta on Niri:** **`50 ms`** (`3 × 16.67 ms` frames at 60 fps; single-configuration observation on Niri, not a guaranteed universal maximum).
-- **Analytical Three-Frame Pipeline Breakdown (Estimated, Not Independently Measured Per Stage):**
-  1. **Frame 1 (`~16.7 ms` — Hardware Scanout + USB 3.0 DMA):** The GC550 scans out 1080 lines of HDMI video (`4.14 MB`) over USB 3.0 Bulk `EP 0x83 IN` until the `EAV` marker triggers `vb2_buffer_done()` in `gc550.ko`.
-  2. **Frame 2 (`~16.7 ms` — GPU Shader & Wayland Compositor):** `mpv` uploads the `YUYV` frame, converts `YUYV → RGB` on the GPU, and submits the surface to KWin/Wayland.
-  3. **Frame 3 (`~16.7 ms` — Laptop Display VSync & Panel Scanout):** KWin flips on the next 60 Hz VSync and the laptop LCD scans out the frame.
-- **Analytical Driver Capture Latency Estimate:** **`~16–20 ms` (~1 frame at 60 Hz)**, an analytical estimate based on the `16.67 ms` 60 Hz frame scanout plus the `~1.5–2.5 ms` `512 KiB` URB completion interval (not an independently measured value).
-- **Historical Niri Endurance Verification (`v0.1.0`):** Runtime-tested on **Niri** (`7.3.1-1-cachyos` Clang) over **3.6+ hours continuous `1080p60` streaming** (`776,295` frames captured with **`0` frame desyncs** and **`0` ALSA audio XRUNs**).
-
-### 2. Kernel (`gc550.ko`) vs. Userspace (`libusb` + `v4l2loopback`) Pipeline Comparison
-
-| Metric / Capability | Userspace Daemon (`libusb` → `v4l2loopback`) | Native Kernel Module (`gc550.ko`) |
-|---|---|---|
-| **USB Transfer Granularity** | `2,080,768 B` (`~2 MiB` = half a 1080p frame per transfer) | **`512 KiB`** (`1/8th` of a frame per URB) |
-| **`EAV` Frame-Completion Delay** | Up to `~8.3 ms` (waits for `2 MiB` buffer to fill into next frame) | **`~1.5–2.5 ms`** (completes immediately on `512 KiB` URB boundary) |
-| **Memory Copies (for OBS / V4L2)** | **3–4 copies per frame** (`libusb` → `BufferReorderer` → `FrameBuilder` → `v4l2loopback` → OBS; ~1 GB/s RAM traffic) | **1 copy** (Kernel URB buffer → `vb2` `mmap` buffer shared directly with OBS; ~250 MB/s) |
-| **Context Switches per Frame** | Multiple Kernel ↔ Userspace hops (`xhci` → daemon → `v4l2loopback` → OBS) | **Zero** intermediate userspace daemon hops |
-| **Audio Integration** | Internal SDL3 audio queue (requires virtual sinks to route into OBS) | **Native ALSA Capture Card (`hw:GC550Audio,0`)** visible in PipeWire & OBS |
-| **Plug-and-Play UX** | Manual CLI launch; claims raw USB interface via `libusb` | **100% Plug-and-Play** (`udev` auto-loads on USB plug-in) |
-| **Fault Isolation** | **Userspace isolated** (process crash only closes the app) | **Kernel ring-0** (driver bugs can cause a kernel `Oops`) |
-
----
-
-## Known Issues & Limitations
-
-1. **SDR Only (No HDR):** The internal Analog Devices `ADV7604` (HDMI RX) and `ADV7511` (HDMI TX) are HDMI 1.4a 8-bit chips. They do not support HDMI 2.0a HDR metadata or 10-bit BT.2020 colorimetry.
-2. **USB 3.0 SuperSpeed (5 Gbps) Required:** Uncompressed 1080p60 YUYV video requires ~250 MB/s of USB bandwidth. Connecting the card to a USB 2.0 port or cable (`480M`) will log a warning in `dmesg` and will not stream video.
-3. **Audio Requires Active Video Capture:** Because the GC550 hardware multiplexes HDMI audio packets (`00 FF FF 58`) inside the USB 3.0 video bulk stream (`EP 0x83 IN`), `/dev/videoX` must be actively streaming (e.g. open in OBS) for audio samples to flow into the ALSA capture device.
-4. **Manual Resolution Selection and Frame-Rate Reporting:** The driver exposes five discrete `YUYV` sizes, but does not automatically change the V4L2 format when HDMI timing changes. Set the OBS/V4L2 source size to match the input. Frame-interval enumeration currently reports 60 fps for all sizes; a `576p50` input was observed at about 50 fps, so frame-rate reporting needs follow-up work.
-5. **Cold Bootstrap Delay (~3.3 Seconds):** The very first time `/dev/videoX` is opened after plugging in the USB cable, the driver sends 6,576 I2C setup commands over USB (~3.3 seconds). Subsequent opens skip the bootstrap and start instantaneously.
-6. **USB Hot-Unplug Testing Status:** Device lifetime is retained across open V4L2 and ALSA handles, and stream URBs are stopped before their resources are released. Software interface unbind/bind was evaluated, but physical cable hot-unplug during active video streaming remains unverified on the Titan hardware baseline. Reopen or reselect the capture devices after reconnecting the USB cable.
-7. **Warm Stream Restart & Swap-State Trapping:** The driver retains `swap_mode` across STREAMOFF. Under rapid stream stop/start cycles (e.g. Phase E1.7 testing), if incoming 16 KiB blocks arrive out-of-phase, the driver's pair accumulation grid is unanchored to SAV headers and the detector cannot toggle back from SWAPPED to NORMAL on full frames, leading to desynchronization storms until the driver is rebound. This behavior was investigated in Phase E1.8, with diagnostic verification planned for Phase E1.9.
-8. **Not Upstream-Ready Yet:** This driver is under active development and is **not ready for mainline Linux kernel upstream submission**. It requires further correctness hardening (SAV-anchored block pairing), multi-resolution phase drift validation, portability testing across non-xHCI host controllers, licensing review, and full media-subsystem API/checkpatch review.
+| **Supported Devices** | **GC550 (`07ca:4710`, `07ca:0550`)** | Fully supported and bare-metal verified on CachyOS / Arch Linux. *(Note: For the LGX2 / GC551 `07ca:0551`, use upstream [`lgx2userspace`](https://github.com/ChrisAJS/lgx2userspace)).* |
+| **V4L2 Video** | **1080p60 down to 480p60** | Uncompressed `YUYV` 4:2:2 video capture (`/dev/videoX` & `/dev/avermedia-gc550`). |
+| **ALSA Audio** | **48 kHz 16-bit Stereo** | Hardware HDMI LPCM audio demuxed directly to native ALSA card (`hw:GC550Audio,0`), visible in PipeWire / PulseAudio. |
+| **Media Controller** | **`/dev/mediaX` (`subdev_mode=1`)** | Optional subdevice graph linking in-tree `adv7604` (RX) and `adv7511` (TX) with V4L2 DV timings. |
+| **End-to-End Latency** | **`~50 ms` (~3 frames @ 60 Hz)** | Minimum latency pipeline saving ~750 MB/s DRAM bandwidth over userspace daemons. |
 
 ---
 
 ## Installation
 
 ### 1. Install Prerequisites (Kernel Headers & DKMS)
-Make sure you have `git`, `make`, `dkms`, and your distribution's kernel headers installed:
+Ensure you have `git`, `make`, `dkms`, and your distribution's kernel headers installed:
 
 - **Arch Linux / CachyOS**:
   ```bash
@@ -145,80 +45,89 @@ cd lgx2KernelLevel
 ```
 
 `./install.sh` is an idempotent, distro-aware DKMS installer that:
-1. Performs preflight validation of kernel headers, build toolchains (GCC or Clang/LLVM), DKMS binaries, and subdevice runtime dependencies (`adv7604`, `adv7511_v4l2`).
-2. Populates a clean DKMS source directory at `/usr/src/gc550-<version>` containing strictly the required kernel build manifest (excluding non-code documentation and private files).
-3. Registers the driver with DKMS (`gc550/<version>`), builds the kernel module for the target kernel, and installs it via DKMS (`dkms install --force`).
-4. Installs the udev rule (`/etc/udev/rules.d/99-avermedia-gc550.rules`) granting user-access and `/dev/avermedia-gc550` symlinks.
-5. Safely detects if `gc550` is already loaded in kernel memory, avoiding disruptive unloads while capture is active.
+1. Validates kernel headers, build toolchains (GCC or Clang/LLVM), DKMS, and subdevice dependencies.
+2. Isolates a clean 12-file source tree into `/usr/src/gc550-<version>`.
+3. Registers with DKMS, builds for the active kernel, and installs via `dkms install --force`.
+4. Installs the udev rule (`/etc/udev/rules.d/99-avermedia-gc550.rules`) granting user access and `/dev/avermedia-gc550` symlinks.
+5. Preserves running capture streams safely without forced module unloading.
 
-### Installer & Uninstaller Commands
+### Installer Command Reference
 ```bash
 ./install.sh          # Full automated DKMS build and installation
 ./install.sh --check  # Non-destructive preflight audit (makes no system changes)
 ./install.sh --help   # Display available options and usage
-./uninstall.sh        # Cleanly and idempotently remove DKMS registration, source tree, and udev rules
+./uninstall.sh        # Cleanly and idempotently remove DKMS module, source tree, and udev rules
 ```
 
-### Persistence Across Reboots & Kernel Updates (Zero-Touch DKMS)
-- **Zero-Touch Kernel Updates**: Because `AUTOINSTALL="yes"` is configured in `dkms.conf`, your distribution's package manager (`pacman`, `apt`, `dnf`) triggers DKMS hooks automatically upon kernel upgrades. DKMS recompiles and signs `gc550.ko` in the background for the newly installed kernel.
-- **Subdevice Registration (`subdev_mode`)**:
-  - `subdev_mode=0` (default): Legacy mode, standalone V4L2 and ALSA capture nodes.
-  - `subdev_mode=1`: Enables Media Controller graph (`/dev/mediaX`), registering in-tree `adv7604` (RX) and `adv7511` (TX) subdevices with Pad 6 format and DV timing synchronization.
-  - To enable permanently, add `options gc550 subdev_mode=1` to `/etc/modprobe.d/gc550.conf`.
+### Persistence Across Kernel Updates (Zero-Touch DKMS)
+- **Automatic Rebuilds:** Because `AUTOINSTALL="yes"` is enabled in `dkms.conf`, your package manager (`pacman`, `apt`, `dnf`) automatically triggers DKMS to recompile `gc550.ko` in the background whenever a new kernel is installed.
+- **Subdevice Registration (`subdev_mode`):**
+  - `subdev_mode=0` (default): Standalone V4L2 and ALSA capture nodes.
+  - `subdev_mode=1`: Enables Media Controller subdevice graph (`/dev/mediaX`) and ADV7604/ADV7511 bindings.
+  - To enable permanently, create `/etc/modprobe.d/gc550.conf` with:
+    ```text
+    options gc550 subdev_mode=1
+    ```
 
 ---
 
 ## Operational Verification Checklist
 
-After running `./install.sh` and plugging the GC550 into a **USB 3.0 (SuperSpeed)** port, run through this checklist to confirm everything is working:
+After running `./install.sh` and connecting the GC550 to a **USB 3.0 (SuperSpeed)** port:
 
-1. **Confirm USB 3.0 SuperSpeed (`5000M`) & Driver Binding:**
+1. **Verify USB 3.0 SuperSpeed (`5000M`) Connection:**
    ```bash
    lsusb -t | grep -i gc550
    ```
    *Expected:* `|__ Port X: Dev Y, If 0, Class=Vendor Specific Class, Driver=gc550, 5000M`
-2. **Confirm V4L2 Video Node & Symlink Exist:**
+
+2. **Verify Video & Audio Devices:**
    ```bash
-   ls -l /dev/avermedia-gc550 /dev/video*
    v4l2-ctl --list-devices
-   ```
-   *Expected:* `/dev/avermedia-gc550 -> video0` (or `videoX`) under `AVerMedia Live Gamer Extreme (GC550)`.
-3. **Confirm ALSA Audio Capture Card Exists:**
-   ```bash
    arecord -l | grep -i gc550
    ```
-   *Expected:* `card X: GC550Audio [AVerMedia GC550], device 0: GC550 HDMI Audio [AVerMedia GC550 Capture]`
-4. **Test 60 Frames of Video Capture & Check HDMI Signal Lock:**
-   ```bash
-   # Standard capture test (with automatic userspace DV timing negotiation):
-   v4l2-ctl -d /dev/avermedia-gc550 --stream-mmap --stream-count=60
-   # (Pass --stream-no-query if you want to isolate capture without timing negotiation)
-   sudo dmesg | grep -i gc550 | tail -n 10
-   ```
-   *Expected `dmesg` output:*
-   ```text
-   gc550 2-4:1.0: AVerMedia Live Gamer Extreme (GC550) [07ca:4710] detected (USB speed: super-speed)
-   gc550 2-4:1.0: Registered gc550 as /dev/video0 and ALSA capture card
-   gc550 2-4:1.0: HDMI Status: cable=YES, signal=LOCKED (1920x1080p, HDMI, HDCP=NO, TMDS=148MHz)
-   gc550 2-4:1.0: Stream stopped: frames=60, desyncs=0, swap_mode=0
-   ```
-5. **Configure in OBS Studio:**
-   - Add a **Video Capture Device (V4L2)** → select **AVerMedia Live Gamer Extreme (GC550)**.
-   - Add an **Audio Input Capture (ALSA / PipeWire)** → select **AVerMedia GC550**.
+   *Expected:* `/dev/avermedia-gc550` video node and `card X: GC550Audio [AVerMedia GC550]` audio card.
 
-If any step above fails, see **[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)** for solutions.
+3. **Test 60 Frames of Video Capture:**
+   ```bash
+   v4l2-ctl -d /dev/avermedia-gc550 --stream-mmap --stream-count=60
+   ```
+
+4. **Configure in OBS Studio:**
+   - **Video:** Add **Video Capture Device (V4L2)** → Select **AVerMedia Live Gamer Extreme (GC550)**.
+   - **Audio:** Add **Audio Input Capture (ALSA / PipeWire)** → Select **AVerMedia GC550**.
+
+If any issue occurs, see **[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)**.
 
 ---
 
-## Documentation Index & Repository Structure
+## Known Limitations
 
-- **[`docs/ADV7604-HARDWARE-LIFECYCLE.md`](docs/ADV7604-HARDWARE-LIFECYCLE.md)** — Authoritative ADV7604 register lifecycle, cold bootstrap provenance, `v4l2-ctl` timing negotiation, and Media Controller topology reference.
-- **[`docs/GC550-REVERSE-ENGINEERING.md`](docs/GC550-REVERSE-ENGINEERING.md)** — Comprehensive hardware reverse-engineering reference, I2C bus targets, and protocol analysis.
-- **[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)** — Solutions for missing kernel headers, Clang/GCC errors, Secure Boot, USB 2.0 fallback, HDCP black screens, and OBS audio.
-- **[`TODO.md`](TODO.md)** — Project roadmap, completed multi-resolution test results, and remaining timing-detection work.
-- **[`PROTOCOL.md`](PROTOCOL.md)** — Deep-dive USB 3.0 bulk protocol, BT.1120 SAV/EAV markers, and I2C register documentation (by `@ChrisAJS`).
-- **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — Driver architecture, hardware safety rules (`AT88SC`), VM testing workflow, and register table format.
+1. **SDR Only (No HDR):** The internal Analog Devices ADV7604 is an HDMI 1.4a SDR receiver. Turn **HDR OFF** on your source console/PC.
+2. **USB 3.0 Required:** 1080p60 YUYV video requires ~250 MB/s of USB bandwidth. USB 2.0 ports/cables are unsupported.
+3. **Audio Requires Video Streaming:** The GC550 hardware multiplexes HDMI audio into the USB 3.0 video stream. The video node must be actively streaming (e.g. open in OBS) for audio samples to flow into ALSA.
+4. **Manual Resolution Matching:** The driver supports 1080p, 720p, 576p, 480p, and 640x480. Match your OBS canvas / capture resolution to your input signal.
+5. **Cold Bootstrap Delay (~3.3 s):** The very first time `/dev/videoX` is opened after USB insertion, the driver sends 6,576 setup commands (~3.3 s). Subsequent opens start instantaneously.
+
+---
+
+## Documentation & Technical Deep-Dives
+
+Detailed technical documentation is organized in the [`docs/`](docs/) directory:
+
+- **[`docs/HARDWARE-COMPATIBILITY.md`](docs/HARDWARE-COMPATIBILITY.md)** — Comprehensive hardware matrix, tested HDMI sources, bare-metal lab testbeds (Titan & Niri), and V4L2 compliance test results.
+- **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — In-depth driver architecture, buffer reordering, ALSA audio demuxing, safe AT88SC crypto isolation, and Media Controller subdevice graph.
+- **[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)** — Latency analysis (`50 ms` glass-to-glass), 3-frame pipeline breakdown, memory bandwidth savings (~750 MB/s DRAM reduction), and endurance benchmarks.
+- **[`docs/ADV7604-HARDWARE-LIFECYCLE.md`](docs/ADV7604-HARDWARE-LIFECYCLE.md)** — Register-level hardware lifecycle, bootstrap provenance, and DV timing negotiation.
+- **[`docs/GC550-REVERSE-ENGINEERING.md`](docs/GC550-REVERSE-ENGINEERING.md)** — Hardware reverse-engineering reference, I2C bus targets, and protocol analysis.
+- **[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)** — Common build errors, Clang/GCC flags, Secure Boot signing, and OBS configuration fixes.
+- **[`PROTOCOL.md`](PROTOCOL.md)** — Upstream USB 3.0 bulk protocol and register specification (by `@ChrisAJS`).
+- **[`CONTRIBUTING.md`](CONTRIBUTING.md)** — Developer guide, coding standards, and hardware safety rules.
 - **[`CHANGELOG.md`](CHANGELOG.md)** — Release history and notable changes.
+
+---
+
+## Repository Structure
 
 ```text
 ├── 99-avermedia-gc550.rules # udev permissions & /dev/avermedia-gc550 symlink
@@ -232,11 +141,18 @@ If any step above fails, see **[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)** for 
 ├── Makefile                 # Out-of-tree kernel module Makefile (GCC & Clang/LLVM auto-detect)
 ├── PKGBUILD                 # Arch Linux / CachyOS pacman package build script (avermedia-gc550-dkms)
 ├── PROTOCOL.md              # USB 3.0 protocol & hardware specification (by @ChrisAJS)
-├── TODO.md                  # Roadmap & technical design notes (including low-resolution support)
+├── TODO.md                  # Roadmap & technical design notes
 ├── TROUBLESHOOTING.md       # Common build, USB, video, and audio troubleshooting guide
 ├── dkms.conf                # DKMS package configuration
 ├── install.sh               # Idempotent DKMS installer and preflight audit script
 ├── uninstall.sh             # Idempotent DKMS uninstaller script
+├── docs/
+│   ├── ARCHITECTURE.md            # Kernel subsystem design, stream parser & media graph
+│   ├── HARDWARE-COMPATIBILITY.md  # Hardware matrix, HDMI sources & lab test environments
+│   ├── PERFORMANCE.md             # Glass-to-glass latency, DRAM throughput & benchmarks
+│   ├── ADV7604-HARDWARE-LIFECYCLE.md # Register provenance & DV timing lifecycle
+│   ├── GC550-REVERSE-ENGINEERING.md  # Comprehensive chip registers & I2C reverse-engineering
+│   └── Top Overview.png           # Hardware PCB layout reference
 └── kernel/
     ├── gc550.h              # Driver structures, constants, and register definitions
     ├── gc550-core.c         # USB probe/disconnect & lifecycle management
@@ -262,7 +178,7 @@ If any step above fails, see **[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)** for 
 
 ## Note for Windows, macOS, and Userspace Driver Users
 
-This fork contains **only the native Linux kernel module (`gc550.ko`)**. All Windows, macOS, and cross-platform `libusb` / SDL3 userspace application files have been removed from this repository.
+This repository contains **only the native Linux kernel module (`gc550.ko`)**. All Windows, macOS, and cross-platform `libusb` / SDL3 userspace application files have been removed from this fork.
 
 If you are on **Windows**, **macOS**, or want the **userspace driver (`lgx2userspace` / `lgx2d`)** or **LGX2 (GC551)** userspace support, please visit **Chris Sawczuk's (@ChrisAJS) upstream repository**:
 👉 [**https://github.com/ChrisAJS/lgx2userspace**](https://github.com/ChrisAJS/lgx2userspace)
@@ -271,25 +187,10 @@ If you are on **Windows**, **macOS**, or want the **userspace driver (`lgx2users
 
 ## Licensing & Provenance
 
-This project contains original Linux kernel driver code and incorporates research, protocol definitions, and hardware initialization data derived from the upstream [**`ChrisAJS/lgx2userspace`**](https://github.com/ChrisAJS/lgx2userspace) project.
+This project contains original Linux kernel driver code and incorporates research, protocol definitions, and hardware initialization data derived from the upstream [**`ChrisAJS/lgx2userspace`**](https://github.com/ChrisAJS/lgx2userspace) project:
 
-### 1. Original Project Code (`GPL-2.0-only OR MIT`)
-All original Linux kernel driver code, headers, build scripts, and packaging authored for `lgx2KernelLevel` (Copyright (C) 2026 Øystein Lie) are dual-licensed under:
+1. **Original Project Code (`GPL-2.0-only OR MIT`):** All original Linux kernel driver code, headers, build scripts, and packaging authored for `lgx2KernelLevel` (Copyright (C) 2026 Øystein Lie) are dual-licensed under **GPL-2.0-only** ([`LICENSE-GPL-2.0`](LICENSE-GPL-2.0)) or **MIT** ([`LICENSE-MIT`](LICENSE-MIT)). The kernel module binary declares `MODULE_LICENSE("Dual MIT/GPL")`.
+2. **Upstream lgx2userspace Material (`MIT License`):** Foundational USB 3.0 protocol reverse-engineering, hardware initialization tables, BT.1120 SAV/EAV checksum validation formulas, and AT88SC CryptoMemory research are derived from [`ChrisAJS/lgx2userspace`](https://github.com/ChrisAJS/lgx2userspace) (Copyright 2021 Chris Sawczuk and contributors, licensed under the MIT License, [`LICENCE.md`](LICENCE.md)).
+3. **Upstream Protocol Specification:** [`PROTOCOL.md`](PROTOCOL.md) is preserved verbatim as historical documentation under its original author's copyright and MIT licensing.
 
-- **GNU General Public License version 2 only (`GPL-2.0-only`)** ([`LICENSE-GPL-2.0`](LICENSE-GPL-2.0)); **OR**
-- **The MIT License (`MIT`)** ([`LICENSE-MIT`](LICENSE-MIT)), at your option.
-
-This dual-licensing arrangement allows permissive MIT reuse while ensuring full compatibility with the Linux kernel's GPL-2.0 licensing requirements. The kernel module binary declares `MODULE_LICENSE("Dual MIT/GPL")`.
-
-### 2. Upstream lgx2userspace Material (`MIT License`)
-Foundational USB 3.0 protocol reverse-engineering, hardware initialization tables, BT.1120 SAV/EAV checksum validation formulas, and AT88SC CryptoMemory research are derived from [**`ChrisAJS/lgx2userspace`**](https://github.com/ChrisAJS/lgx2userspace):
-
-- **Copyright 2021 Chris Sawczuk <chris@sawcz.uk> and contributors**
-- Licensed under the **MIT License** ([`LICENCE.md`](LICENCE.md)).
-
-All upstream copyright notices, permissions, and conditions are preserved in full. Upstream authors have not granted additional licensing rights beyond the MIT License.
-
-### 3. Upstream Protocol Specification
-The upstream specification [`PROTOCOL.md`](PROTOCOL.md) is preserved verbatim as historical documentation under its original author's copyright and MIT licensing.
-
-For complete details and file-by-file classifications, see [`LICENSES.md`](LICENSES.md).
+For complete details, see [`LICENSES.md`](LICENSES.md).

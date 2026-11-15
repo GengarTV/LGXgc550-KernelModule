@@ -9,6 +9,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased] - Phase 2C6A DKMS Modernization & Phase 2C5D Hardware Validation
 
 ### Added
+- **Documentation Restructuring & Deep-Dive Modularization**:
+  - Streamlined front-page `README.md` to prioritize fast installation, quick verification, and end-user onboarding.
+  - Relocated in-depth technical analysis into dedicated modular documents:
+    - [`docs/HARDWARE-COMPATIBILITY.md`](docs/HARDWARE-COMPATIBILITY.md) (hardware compatibility, tested HDMI sources, and lab testbed specifications).
+    - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (kernel subsystem design, stream parser, safe AT88SC crypto isolation, and Media Controller topology).
+    - [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) (glass-to-glass latency analysis, DRAM memory throughput savings, and endurance benchmarks).
 - **Modernized DKMS Installation Framework (`install.sh` & `uninstall.sh`)**:
   - Refactored `install.sh` into an idempotent, robust DKMS packaging and installation tool supporting preflight audits (`./install.sh --check`), automated Clang/LLVM toolchain discovery, and non-destructive handling of actively loaded modules.
   - Standardized DKMS package name as `gc550` and installed source directory at `/usr/src/gc550-<version>`.
