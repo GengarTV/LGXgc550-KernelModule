@@ -89,6 +89,14 @@ This file tracks planned features, technical design notes, and future experiment
 - [ ] Dynamic frame interval detection based on ADV7604 TMDS / vertical frequency measurements.
 - [ ] Full Linux Media Subsystem checkpatch and API compliance review.
 
+### 7. Phase 2C5D – Media Controller, DV Timings & Register Provenance — COMPLETE
+- [x] **Media Controller Topology (`subdev_mode=1`)**: Registered `/dev/mediaX` media device exposing `adv7604` and `adv7511` subdevices with immutable link `adv7604:6 -> "AVerMedia GC550":0 [ENABLED,IMMUTABLE]`.
+- [x] **V4L2 DV Timings IOCTL Implementation**: Implemented `vidioc_g_dv_timings`, `vidioc_s_dv_timings`, `vidioc_query_dv_timings`, `vidioc_enum_dv_timings`, and `vidioc_dv_timings_cap` in `gc550-video.c`.
+- [x] **Subdevice Pad Format Synchronization**: Pad 6 format dynamically synchronizes with capture node geometry.
+- [x] **Multi-Resolution Hardware Capture (Phase 2C5D-A)**: Four broadcast resolutions (1080p60, 720p60, 576p50, 480p60) verified on bare-metal Titan (0 desyncs, 0 URB errors, `swap_mode=0`, broadcast luma $Y \in [16..235]$, 0.00% white saturation).
+- [x] **S_DV_TIMINGS Hardware Experiment (Phase 2C5D-B)**: Verified explicit `v4l2-ctl --set-dv-bt-timings query` from 480p to 1080p60; TMDS locked (`CP[0xff] = 0x08`), BGR bus order (`IO[0x04] = 0x42`) and SDR mode (`IO[0x03] = 0x80`) preserved; simultaneous video/audio verified.
+- [x] **Exhaustive Bootstrap Register Provenance Audit**: Parsed all 6,576 operations in `gc550_init_blob`. Confirmed cold bootstrap values `IO[0x00]=0x08`, `IO[0x01]=0x06`, `CP[0x91]=0x50`. Explained `v4l2-ctl` automatic timing negotiation and proved that 2C5D-B pre-measurement retained the valid 480p timing from 2C5D-A. See [`docs/ADV7604-HARDWARE-LIFECYCLE.md`](docs/ADV7604-HARDWARE-LIFECYCLE.md).
+
 ---
 
 ## Audio Transport & Sample-Rate Investigation (`44.1 kHz` / `48 kHz` / `32 kHz`) — Complete

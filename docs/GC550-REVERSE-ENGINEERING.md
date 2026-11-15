@@ -448,6 +448,17 @@ In [`kernel/gc550-regtables.h`](../kernel/gc550-regtables.h), the initialization
 3. **Important Limitation of Offline Table Validation (`Confirmed`)**:
    - Offline validation of `gc550_init_blob` proves only structural consistency of the C array in [`kernel/gc550-regtables.h`](../kernel/gc550-regtables.h) against the expected entry format and opcode rules. It does **not** prove that hardware initialization has been executed on a given machine.
 
+### 4. ADV7604 Bootstrap Register Provenance and Runtime Lifecycle (Phase 2C5D Verification)
+
+An exhaustive, read-only programmatic audit of all 6,576 operations in `gc550_init_blob` verified the exact write sequence for the primary ADV7604 timing and scan-mode registers:
+- **`IO[0x00]` (`VID_STD`)**: Programmed to **`0x08`** (`HDMI-GR` graphics mode) at **Step 2681** (byte offset 21881: `01 20 01 00 08`).
+- **`IO[0x01]` (`PRIM_MODE`)**: Programmed to **`0x06`** (`1080p60` graphics mode) at **Step 2683** (byte offset 21897: `01 20 01 01 06`).
+- **`CP[0x91]` (`SCAN`)**: Programmed to **`0x50`** (bit 6 set) at **Step 2653** (byte offset 21646: `01 22 01 91 50`).
+
+Across steps 2684 through 6576, no further writes to `IO[0x00]`, `IO[0x01]`, or `CP[0x91]` occur anywhere in `gc550_init_blob`. Furthermore, post-bootstrap operations (`gc550_bootstrap_hw()`, `adv76xx_core_init()`, and `gc550_configure_adv7604()`) leave these three registers untouched. Immediately following driver probe, the hardware holds `IO[0x00]=0x08`, `IO[0x01]=0x06`, and `CP[0x91]=0x50`.
+
+For complete documentation of subsequent runtime register transitions under userspace `v4l2-ctl` automatic timing negotiation and explicit `VIDIOC_S_DV_TIMINGS` execution, see [`docs/ADV7604-HARDWARE-LIFECYCLE.md`](ADV7604-HARDWARE-LIFECYCLE.md).
+
 ---
 
 ## F. Audio Architecture
@@ -877,4 +888,5 @@ The table below summarizes the established reverse-engineering findings, their e
 | **Upstream `BufferReorderer` SAV-Anchored Architecture (Phase E1.8)**: Upstream reference explicitly anchors 32 KiB pair grid to `observation.savOffset`, drops leading bytes prior to decided SAV, detects normal order via 32 KiB lookahead window, transitions bidirectionally, and passes `gapped = true` to downstream `FrameBuilder`. | Source code audit of `ChrisAJS/lgx2userspace` (`BufferReorderer.{h,cpp}`, commit `908a1ce3`). | `Confirmed` | Upstream FrameBuilder arming discrepancy confirmed: header comment requires `c0 == b0`, but code arms on checksum alone and treats `c[0] != _savB0` as soft mismatch. |
 | **Multi-Resolution DMA Block Parity & Phase Drift Risk (Phase E1.8)**: Upstream algorithm assumes an even number of 16 KiB blocks per frame period (1080p: 254 blocks). If lower resolutions have odd block periods, SAV alternates between Block 0 and Block 1 on alternating frames, breaking upstream's `(savOffset - pairOrigin) % 32768 == 0` check. | Mathematical analysis of frame periods, [`PROTOCOL.md`](../PROTOCOL.md), `BufferReorderer.cpp`. | `Confirmed` (for 1080p 254 even blocks) / `Inferred` (phase drift risk on odd blocks) | Exact total frame period (with padding) in 16 KiB blocks for 720p, 576p, 480p, and 640x480 is `Unknown`. |
 | **STREAMOFF Hardware State & FIFO Behavior (Phase E1.8)**: Kernel driver issues no explicit FX3 stop, DMA channel reset, or FIFO flush command at STREAMOFF. Actual FX3 hardware state and FIFO occupancy during pause remain unmeasured. | [`kernel/gc550-video.c`](../kernel/gc550-video.c) lines 676–690. | `Confirmed` (driver inaction) / `Unknown` (FX3 hardware behavior) | Whether `usb_clear_halt()` on EP 0x83 safely flushes the FX3 Bulk IN FIFO without wedging endpoint state. |
+| **Media Controller Topology, DV Timings & S_DV_TIMINGS Safety (Phase 2C5D)**: In `subdev_mode=1`, `/dev/media1` establishes an immutable link `adv7604 Pad 6 (SOURCE) -> GC550 Pad 0 (SINK) -> /dev/video2`. `VIDIOC_S_DV_TIMINGS` safely configures predefined standards (`adv76xx_prim_mode_hdmi_comp[]`, `IO[0x00]=0x1e` for 1080p, `0x05` for `HDMI-COMP`) without altering pixel bus order (`IO[0x04]=0x42`) or SDR mode (`IO[0x03]=0x80`). Subdevice Pad 6 format synchronizes seamlessly with the capture pipeline; 1080p60, 720p60, 576p50, and 480p60 captures verified with 0 desyncs, 0 URB errors, and clean broadcast luma ($Y \in [16..235]$). | [`docs/ADV7604-HARDWARE-LIFECYCLE.md`](ADV7604-HARDWARE-LIFECYCLE.md), bare-metal testing on Titan (`7.3.4-1-cachyos`). | `Confirmed` | Exhaustive testing across all non-standard / custom CEA/VESA timings beyond the four primary broadcast resolutions. |
 

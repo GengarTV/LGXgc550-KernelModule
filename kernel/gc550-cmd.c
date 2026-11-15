@@ -232,6 +232,7 @@ int gc550_detect_board_state(struct gc550_dev *dev, bool *already_configured)
 {
 	u8 edid_map = 0;
 	u8 gpio_cfg[2] = { 0, 0 };
+	u8 op_fmt = 0, esdp_map = 0, dpp_map = 0, tx_pwr = 0;
 	int ret;
 
 	*already_configured = false;
@@ -252,8 +253,48 @@ int gc550_detect_board_state(struct gc550_dev *dev, bool *already_configured)
 		 "Board state probe: ADV7604 IO[0xFA]=0x%02x, PCA9539A CFG=0x%02x 0x%02x\n",
 		 edid_map, gpio_cfg[0], gpio_cfg[1]);
 
-	if (edid_map == 0x6c && gpio_cfg[0] == 0x00 && gpio_cfg[1] == 0x09)
-		*already_configured = true;
+	if (edid_map == 0x6c && gpio_cfg[0] == 0x00 && gpio_cfg[1] == 0x09) {
+		if (!dev->subdev_mode) {
+			*already_configured = true;
+			return 0;
+		}
+
+		/*
+		 * In subdev_mode=1, upstream adv76xx_probe() reinitializes
+		 * ADV7604 IO[0x03] to 0x00 (8-bit SDR 4:2:2 via adv76xx_core_init())
+		 * and writes IO[0xFA] = 0x6c, while adv7511_probe() powers down
+		 * ADV7513 (Main[0x41] |= 0x40). Verify that the pre-probe capture
+		 * pipeline and collision-free ESDP/DPP sub-map addresses are
+		 * genuinely active before skipping bootstrap replay.
+		 */
+		ret = gc550_i2c_read_byte(dev, GC550_I2C_ADV7604_IO, 0x03,
+					  &op_fmt);
+		if (ret < 0)
+			return ret;
+
+		ret = gc550_i2c_read_byte(dev, GC550_I2C_ADV7604_IO, 0xf6,
+					  &esdp_map);
+		if (ret < 0)
+			return ret;
+
+		ret = gc550_i2c_read_byte(dev, GC550_I2C_ADV7604_IO, 0xf7,
+					  &dpp_map);
+		if (ret < 0)
+			return ret;
+
+		ret = gc550_i2c_read_byte(dev, GC550_I2C_ADV7511_TX, 0x41,
+					  &tx_pwr);
+		if (ret < 0)
+			return ret;
+
+		dev_info(&dev->intf->dev,
+			 "Subdev pre-probe state: ADV7604 IO[0x03]=0x%02x IO[0xF6]=0x%02x IO[0xF7]=0x%02x, ADV7513 Main[0x41]=0x%02x\n",
+			 op_fmt, esdp_map, dpp_map, tx_pwr);
+
+		if (op_fmt == 0x80 && esdp_map == 0x56 && dpp_map == 0x76 &&
+		    (tx_pwr & 0x40) == 0)
+			*already_configured = true;
+	}
 
 	return 0;
 }
@@ -288,6 +329,42 @@ static int gc550_set_auto_input_colorspace(struct gc550_dev *dev)
 			       neutral_cp, sizeof(neutral_cp));
 }
 
+/*
+ * gc550_translate_subdev_init_cmd - Translate colliding ADV7604 sub-map writes
+ *
+ * When dev->subdev_mode is active, translate only the two colliding ADV7604
+ * sub-map slave address assignments in gc550_init_blob without altering the
+ * static blob:
+ *   - ADV7604 0x20 reg 0xF6 (ESDP): 0x70 (0x38) -> 0x56 (0x2B)
+ *   - ADV7604 0x20 reg 0xF7 (DPP):  0x78 (0x3C) -> 0x76 (0x3B)
+ */
+static const u8 *gc550_translate_subdev_init_cmd(const struct gc550_dev *dev,
+						 const u8 *tx_data, u8 tx_len,
+						 u16 rx_len, u8 buf[5])
+{
+	if (!dev->subdev_mode || rx_len != 0 || tx_len != 5)
+		return tx_data;
+
+	if (tx_data[0] != GC550_OP_I2C_WRITE ||
+	    tx_data[1] != GC550_I2C_ADV7604_IO ||
+	    tx_data[2] != 0x01)
+		return tx_data;
+
+	if (tx_data[3] == 0xf6 && tx_data[4] == 0x70) {
+		memcpy(buf, tx_data, 4);
+		buf[4] = 0x56;
+		return buf;
+	}
+
+	if (tx_data[3] == 0xf7 && tx_data[4] == 0x78) {
+		memcpy(buf, tx_data, 4);
+		buf[4] = 0x76;
+		return buf;
+	}
+
+	return tx_data;
+}
+
 /**
  * gc550_run_init_sequence - Replay the 6,576 hardware initialization steps
  */
@@ -302,6 +379,8 @@ static int gc550_run_init_sequence(struct gc550_dev *dev)
 		u8 tx_len = gc550_init_blob[offset];
 		u16 rx_len = get_unaligned_le16(&gc550_init_blob[offset + 1]);
 		const u8 *tx_data = &gc550_init_blob[offset + 3];
+		const u8 *cmd_buf;
+		u8 translated_cmd[5];
 
 		if (READ_ONCE(dev->disconnected)) {
 			ret = -ENODEV;
@@ -313,10 +392,14 @@ static int gc550_run_init_sequence(struct gc550_dev *dev)
 			break;
 		}
 
+		cmd_buf = gc550_translate_subdev_init_cmd(dev, tx_data, tx_len,
+							  rx_len,
+							  translated_cmd);
+
 		if (rx_len > 0)
-			ret = gc550_cmd_xfer(dev, tx_data, tx_len, NULL, rx_len);
+			ret = gc550_cmd_xfer(dev, cmd_buf, tx_len, NULL, rx_len);
 		else
-			ret = gc550_cmd_send(dev, tx_data, tx_len);
+			ret = gc550_cmd_send(dev, cmd_buf, tx_len);
 
 		if (ret < 0) {
 			dev_err(&dev->intf->dev,

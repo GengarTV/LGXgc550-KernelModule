@@ -84,6 +84,14 @@ UEFI **Secure Boot** is enabled, which blocks unsigned out-of-tree kernel module
      - **MacBooks / Apple TV:** macOS frequently forces HDCP on HDMI outputs.
    - If **`signal=NONE`**: Check that the source is active, the HDMI cable is connected to **HDMI IN**, and HDR is disabled.
    - If the signal is locked but OBS is black, set the OBS V4L2 source's **Resolution/FPS Type** to **Custom** and choose the size matching the input. Supported sizes are `1920x1080`, `1280x720`, `720x576`, `720x480`, and `640x480`; the driver does not switch the V4L2 format automatically when the source timing changes.
+   - **V4L2 Format vs DV Timings:** Note that `v4l2-ctl --set-fmt-video` configures the capture buffer size on `/dev/videoX`, but does **not** program the ADV7604 receiver timings. To query or update the hardware timing on the ADV7604 receiver:
+     ```bash
+     # Query the active incoming TMDS signal timing:
+     v4l2-ctl -d /dev/videoX --query-dv-timings
+     # Apply the queried timing to the receiver:
+     v4l2-ctl -d /dev/videoX --set-dv-bt-timings query
+     ```
+     When testing with `v4l2-ctl --stream-mmap`, pass `--stream-no-query` if you wish to isolate capture without triggering automatic timing renegotiation. See [`docs/ADV7604-HARDWARE-LIFECYCLE.md`](docs/ADV7604-HARDWARE-LIFECYCLE.md) for details.
 
 ---
 

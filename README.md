@@ -187,7 +187,9 @@ After running `./install.sh` and plugging the GC550 into a **USB 3.0 (SuperSpeed
    *Expected:* `card X: GC550Audio [AVerMedia GC550], device 0: GC550 HDMI Audio [AVerMedia GC550 Capture]`
 4. **Test 60 Frames of Video Capture & Check HDMI Signal Lock:**
    ```bash
+   # Standard capture test (with automatic userspace DV timing negotiation):
    v4l2-ctl -d /dev/avermedia-gc550 --stream-mmap --stream-count=60
+   # (Pass --stream-no-query if you want to isolate capture without timing negotiation)
    sudo dmesg | grep -i gc550 | tail -n 10
    ```
    *Expected `dmesg` output:*
@@ -207,6 +209,8 @@ If any step above fails, see **[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)** for 
 
 ## Documentation Index & Repository Structure
 
+- **[`docs/ADV7604-HARDWARE-LIFECYCLE.md`](docs/ADV7604-HARDWARE-LIFECYCLE.md)** — Authoritative ADV7604 register lifecycle, cold bootstrap provenance, `v4l2-ctl` timing negotiation, and Media Controller topology reference.
+- **[`docs/GC550-REVERSE-ENGINEERING.md`](docs/GC550-REVERSE-ENGINEERING.md)** — Comprehensive hardware reverse-engineering reference, I2C bus targets, and protocol analysis.
 - **[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)** — Solutions for missing kernel headers, Clang/GCC errors, Secure Boot, USB 2.0 fallback, HDCP black screens, and OBS audio.
 - **[`TODO.md`](TODO.md)** — Project roadmap, completed multi-resolution test results, and remaining timing-detection work.
 - **[`PROTOCOL.md`](PROTOCOL.md)** — Deep-dive USB 3.0 bulk protocol, BT.1120 SAV/EAV markers, and I2C register documentation (by `@ChrisAJS`).

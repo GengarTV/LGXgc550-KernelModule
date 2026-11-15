@@ -31,11 +31,128 @@
  *    each 32 KiB pair back into proper order.
  */
 
+#include <linux/moduleparam.h>
 #include <linux/slab.h>
 #include <linux/unaligned.h>
+#include <linux/media-bus-format.h>
+#include <media/i2c/adv7511.h>
+#include <media/i2c/adv7604.h>
+#include <media/v4l2-common.h>
+#include <media/v4l2-dv-timings.h>
 #include "gc550.h"
 
 #define GC550_MAX_FRAME_SPAN	(GC550_FRAME_SIZE + 0x4000)
+
+static int subdev_mode;
+module_param(subdev_mode, int, 0444);
+MODULE_PARM_DESC(subdev_mode,
+		 "V4L2 subdevice registration mode (0=disabled/legacy default, 1=register adv7604 and adv7511 subdevices)");
+
+/*
+ * ADV7604 platform data:
+ * - IO[0xFB] defaults to 0x68 (HDMI sub-map address 0x34 << 1), which the
+ *   upstream adv7604 driver checks during probe.
+ * - ESDP (0x2b) and DPP (0x3b) are reassigned away from 0x38 and 0x3c (and
+ *   avoiding reserved/alternate transmitter address 0x39) to prevent 7-bit
+ *   I2C address collisions with ADV7513 Packet Memory (0x38) and CEC (0x3c).
+ * - InfoFrame (0x46) and TEST (0x29) match the GC550 hardware sub-map layout.
+ */
+static struct adv76xx_platform_data gc550_adv7604_pdata = {
+	.disable_pwrdnb = 0,
+	.disable_cable_det_rst = 0,
+	.default_input = 0,
+	.ain_sel = ADV7604_AIN1_2_3_NC_SYNC_1_2,
+	.bus_order = ADV7604_BUS_ORDER_BGR,
+	.op_format_mode_sel = ADV7604_OP_FORMAT_MODE0,
+	.int1_config = ADV76XX_INT1_CONFIG_DISABLED,
+	.alt_gamma = 0,
+	.blank_data = 1,
+	.insert_av_codes = 1,
+	.replicate_av_codes = 0,
+	.inv_vs_pol = 1,
+	.inv_hs_pol = 1,
+	.inv_llc_pol = 0,
+	.dr_str_data = ADV76XX_DR_STR_HIGH,
+	.dr_str_clk = ADV76XX_DR_STR_HIGH,
+	.dr_str_sync = ADV76XX_DR_STR_HIGH,
+	.output_bus_lsb_to_msb = 0,
+	.hdmi_free_run_mode = 0,
+	.i2c_addresses = {
+		[ADV7604_PAGE_AVLINK]    = 0x42,
+		[ADV76XX_PAGE_CEC]       = 0x40,
+		[ADV76XX_PAGE_INFOFRAME] = 0x46,
+		[ADV7604_PAGE_ESDP]      = 0x2b,
+		[ADV7604_PAGE_DPP]       = 0x3b,
+		[ADV76XX_PAGE_AFE]       = 0x26,
+		[ADV76XX_PAGE_REP]       = 0x32,
+		[ADV76XX_PAGE_EDID]      = 0x36,
+		[ADV76XX_PAGE_HDMI]      = 0x34,
+		[ADV76XX_PAGE_TEST]      = 0x29,
+		[ADV76XX_PAGE_CP]        = 0x22,
+		[ADV7604_PAGE_VDP]       = 0x24,
+	},
+};
+
+static struct i2c_board_info gc550_adv7604_board_info = {
+	I2C_BOARD_INFO("adv7604", GC550_I2C_ADV7604_IO),
+	.platform_data = &gc550_adv7604_pdata,
+};
+
+static struct adv7511_platform_data gc550_adv7511_pdata = {
+	.i2c_edid = 0x3f,
+	.i2c_cec = 0x3c,
+	.i2c_pktmem = 0x38,
+	.cec_clk = 12000000,
+};
+
+static struct i2c_board_info gc550_adv7511_board_info = {
+	I2C_BOARD_INFO("adv7511-v4l2", GC550_I2C_ADV7511_TX),
+	.platform_data = &gc550_adv7511_pdata,
+};
+
+static int gc550_configure_adv7604(struct gc550_dev *dev)
+{
+	u32 width, height;
+	struct v4l2_subdev_format fmt;
+	int ret;
+
+	if (!dev || !dev->sd_adv7604)
+		return -ENODEV;
+
+	width = dev->pix_fmt.width ? dev->pix_fmt.width : GC550_DEFAULT_WIDTH;
+	height = dev->pix_fmt.height ? dev->pix_fmt.height : GC550_DEFAULT_HEIGHT;
+
+	memset(&fmt, 0, sizeof(fmt));
+	fmt.which = V4L2_SUBDEV_FORMAT_ACTIVE;
+	fmt.pad = ADV7604_PAD_SOURCE;
+	fmt.format.width = width;
+	fmt.format.height = height;
+	fmt.format.code = MEDIA_BUS_FMT_YUYV8_1X16;
+	fmt.format.field = V4L2_FIELD_NONE;
+	fmt.format.colorspace = dev->pix_fmt.colorspace ?
+		dev->pix_fmt.colorspace : V4L2_COLORSPACE_REC709;
+	fmt.format.ycbcr_enc = dev->pix_fmt.ycbcr_enc ?
+		dev->pix_fmt.ycbcr_enc : V4L2_YCBCR_ENC_709;
+	fmt.format.quantization = dev->pix_fmt.quantization ?
+		dev->pix_fmt.quantization : V4L2_QUANTIZATION_LIM_RANGE;
+	fmt.format.xfer_func = dev->pix_fmt.xfer_func ?
+		dev->pix_fmt.xfer_func : V4L2_XFER_FUNC_709;
+
+	ret = v4l2_subdev_call(dev->sd_adv7604, pad, set_fmt, NULL, &fmt);
+	if (ret < 0) {
+		dev_err(&dev->intf->dev,
+			"Failed to configure adv7604 source pad format: %d\n",
+			ret);
+		return ret;
+	}
+
+	dev_info(&dev->intf->dev,
+		 "Configured adv7604 pad %u format: code=0x%04x %ux%u\n",
+		 ADV7604_PAD_SOURCE, fmt.format.code,
+		 fmt.format.width, fmt.format.height);
+
+	return 0;
+}
 
 static const u8 gc550_yuyv_black[4] = { 16, 128, 16, 128 };
 
@@ -953,12 +1070,63 @@ static int gc550_start_streaming(struct vb2_queue *vq, unsigned int count)
 		return -ENODEV;
 	}
 
-	ret = gc550_bootstrap_hw(dev);
-	if (ret < 0) {
-		gc550_return_all_buffers(dev, VB2_BUF_STATE_QUEUED);
-		return ret;
+	if (dev->subdev_mode) {
+		u32 input_status = 0;
+
+		/*
+		 * Subdevice mode (subdev_mode=1):
+		 * Verify that hardware bootstrap completed and both expected
+		 * subdevices are registered. Never replay gc550_bootstrap_hw().
+		 */
+		if (!dev->is_bootstrapped || !dev->sd_adv7604 || !dev->sd_adv7511) {
+			dev_err(&dev->intf->dev,
+				"Cannot stream in subdevice mode: unbootstrapped or missing subdevices (is_bootstrapped=%d, adv7604=%p, adv7511=%p)\n",
+				dev->is_bootstrapped, dev->sd_adv7604, dev->sd_adv7511);
+			gc550_return_all_buffers(dev, VB2_BUF_STATE_QUEUED);
+			return -EIO;
+		}
+
+		ret = gc550_configure_adv7604(dev);
+		if (ret < 0) {
+			dev_err(&dev->intf->dev,
+				"Failed to reapply adv7604 format on stream start: %d\n",
+				ret);
+			gc550_return_all_buffers(dev, VB2_BUF_STATE_QUEUED);
+			return ret;
+		}
+
+		ret = v4l2_subdev_call(dev->sd_adv7604, video, g_input_status,
+				       &input_status);
+		if (ret == 0) {
+			dev_info(&dev->intf->dev,
+				 "ADV7604 input status: 0x%08x (%s%s)\n",
+				 input_status,
+				 (input_status == 0) ? "locked / signal OK" :
+				 ((input_status & V4L2_IN_ST_NO_SIGNAL) ? "no signal " : ""),
+				 (input_status & V4L2_IN_ST_NO_POWER) ? "no 5V power" : "");
+		} else {
+			dev_warn(&dev->intf->dev,
+				 "ADV7604 g_input_status query failed: %d\n", ret);
+		}
+	} else {
+		/*
+		 * Legacy mode (subdev_mode=0):
+		 * Fail-closed if any subdevice pointer is unexpectedly present.
+		 */
+		if (dev->sd_adv7604 || dev->sd_adv7511) {
+			dev_err(&dev->intf->dev,
+				"Cannot stream in legacy mode: subdevices unexpectedly registered\n");
+			gc550_return_all_buffers(dev, VB2_BUF_STATE_QUEUED);
+			return -EIO;
+		}
+
+		ret = gc550_bootstrap_hw(dev);
+		if (ret < 0) {
+			gc550_return_all_buffers(dev, VB2_BUF_STATE_QUEUED);
+			return ret;
+		}
+		gc550_log_signal_status(dev);
 	}
-	gc550_log_signal_status(dev);
 
 	mutex_lock(&dev->stream_mutex);
 	ret = gc550_alloc_stream_urbs(dev);
@@ -1116,11 +1284,15 @@ static int gc550_vidioc_enum_frameintervals(struct file *file, void *priv,
 static int gc550_vidioc_enum_input(struct file *file, void *priv,
 				   struct v4l2_input *inp)
 {
+	struct gc550_dev *dev = video_drvdata(file);
+
 	if (inp->index > 0)
 		return -EINVAL;
 
 	strscpy(inp->name, "HDMI", sizeof(inp->name));
 	inp->type = V4L2_INPUT_TYPE_CAMERA;
+	if (dev->subdev_mode && dev->sd_adv7604)
+		inp->capabilities = V4L2_IN_CAP_DV_TIMINGS;
 	return 0;
 }
 
@@ -1133,6 +1305,96 @@ static int gc550_vidioc_g_input(struct file *file, void *priv, unsigned int *i)
 static int gc550_vidioc_s_input(struct file *file, void *priv, unsigned int i)
 {
 	return (i == 0) ? 0 : -EINVAL;
+}
+
+static int gc550_vidioc_g_dv_timings(struct file *file, void *priv,
+				     struct v4l2_dv_timings *timings)
+{
+	struct gc550_dev *dev = video_drvdata(file);
+
+	if (!dev->subdev_mode || !dev->sd_adv7604)
+		return -ENODATA;
+
+	return v4l2_subdev_call(dev->sd_adv7604, pad, g_dv_timings,
+				ADV76XX_PAD_HDMI_PORT_A, timings);
+}
+
+static int gc550_vidioc_s_dv_timings(struct file *file, void *priv,
+				     struct v4l2_dv_timings *timings)
+{
+	struct gc550_dev *dev = video_drvdata(file);
+	struct v4l2_dv_timings current_timings;
+	const struct v4l2_frmsize_discrete *size;
+	int ret;
+
+	if (!dev->subdev_mode || !dev->sd_adv7604)
+		return -ENODATA;
+
+	if (vb2_is_busy(&dev->vb_queue))
+		return -EBUSY;
+
+	if (timings->type != V4L2_DV_BT_656_1120)
+		return -EINVAL;
+
+	size = gc550_find_frame_size(timings->bt.width, timings->bt.height);
+	if (!size)
+		return -EINVAL;
+
+	ret = v4l2_subdev_call(dev->sd_adv7604, pad, g_dv_timings,
+			       ADV76XX_PAD_HDMI_PORT_A, &current_timings);
+	if (ret == 0 && v4l2_match_dv_timings(&current_timings, timings, 0, false))
+		return 0;
+
+	ret = v4l2_subdev_call(dev->sd_adv7604, pad, s_dv_timings,
+			       ADV76XX_PAD_HDMI_PORT_A, timings);
+	if (ret < 0)
+		return ret;
+
+	dev->pix_fmt.width = timings->bt.width;
+	dev->pix_fmt.height = timings->bt.height;
+	dev->pix_fmt.bytesperline = dev->pix_fmt.width * GC550_BYTES_PER_PIXEL;
+	dev->pix_fmt.sizeimage = dev->pix_fmt.bytesperline * dev->pix_fmt.height;
+
+	/* Reapply ADV7604 pad format so Pad 6 matches the newly set DV timings */
+	gc550_configure_adv7604(dev);
+
+	return 0;
+}
+
+static int gc550_vidioc_query_dv_timings(struct file *file, void *priv,
+					 struct v4l2_dv_timings *timings)
+{
+	struct gc550_dev *dev = video_drvdata(file);
+
+	if (!dev->subdev_mode || !dev->sd_adv7604)
+		return -ENODATA;
+
+	return v4l2_subdev_call(dev->sd_adv7604, pad, query_dv_timings,
+				ADV76XX_PAD_HDMI_PORT_A, timings);
+}
+
+static int gc550_vidioc_enum_dv_timings(struct file *file, void *priv,
+					struct v4l2_enum_dv_timings *timings)
+{
+	struct gc550_dev *dev = video_drvdata(file);
+
+	if (!dev->subdev_mode || !dev->sd_adv7604)
+		return -ENODATA;
+
+	timings->pad = ADV76XX_PAD_HDMI_PORT_A;
+	return v4l2_subdev_call(dev->sd_adv7604, pad, enum_dv_timings, timings);
+}
+
+static int gc550_vidioc_dv_timings_cap(struct file *file, void *priv,
+				       struct v4l2_dv_timings_cap *cap)
+{
+	struct gc550_dev *dev = video_drvdata(file);
+
+	if (!dev->subdev_mode || !dev->sd_adv7604)
+		return -ENODATA;
+
+	cap->pad = ADV76XX_PAD_HDMI_PORT_A;
+	return v4l2_subdev_call(dev->sd_adv7604, pad, dv_timings_cap, cap);
 }
 
 static int gc550_vidioc_g_parm(struct file *file, void *priv,
@@ -1154,6 +1416,14 @@ static int gc550_vidioc_s_parm(struct file *file, void *priv,
 	return gc550_vidioc_g_parm(file, priv, sp);
 }
 
+static int gc550_vidioc_log_status(struct file *file, void *priv)
+{
+	struct gc550_dev *dev = video_drvdata(file);
+
+	v4l2_device_call_all(&dev->v4l2_dev, 0, core, log_status);
+	return 0;
+}
+
 static const struct v4l2_ioctl_ops gc550_ioctl_ops = {
 	.vidioc_querycap            = gc550_vidioc_querycap,
 	.vidioc_enum_fmt_vid_cap    = gc550_vidioc_enum_fmt_vid_cap,
@@ -1165,8 +1435,14 @@ static const struct v4l2_ioctl_ops gc550_ioctl_ops = {
 	.vidioc_enum_input          = gc550_vidioc_enum_input,
 	.vidioc_g_input             = gc550_vidioc_g_input,
 	.vidioc_s_input             = gc550_vidioc_s_input,
+	.vidioc_g_dv_timings        = gc550_vidioc_g_dv_timings,
+	.vidioc_s_dv_timings        = gc550_vidioc_s_dv_timings,
+	.vidioc_query_dv_timings    = gc550_vidioc_query_dv_timings,
+	.vidioc_enum_dv_timings     = gc550_vidioc_enum_dv_timings,
+	.vidioc_dv_timings_cap      = gc550_vidioc_dv_timings_cap,
 	.vidioc_g_parm              = gc550_vidioc_g_parm,
 	.vidioc_s_parm              = gc550_vidioc_s_parm,
+	.vidioc_log_status          = gc550_vidioc_log_status,
 
 	.vidioc_reqbufs             = vb2_ioctl_reqbufs,
 	.vidioc_create_bufs         = vb2_ioctl_create_bufs,
@@ -1189,6 +1465,103 @@ static const struct v4l2_file_operations gc550_fops = {
 	.mmap           = vb2_fop_mmap,
 };
 
+static void gc550_subdevs_unregister(struct gc550_dev *dev)
+{
+	if (dev->sd_adv7511) {
+		v4l2_device_unregister_subdev(dev->sd_adv7511);
+		dev->sd_adv7511 = NULL;
+	}
+	if (dev->sd_adv7604) {
+		v4l2_device_unregister_subdev(dev->sd_adv7604);
+		dev->sd_adv7604 = NULL;
+	}
+}
+
+static int gc550_subdevs_register(struct gc550_dev *dev)
+{
+	int ret;
+
+	if (subdev_mode == 0) {
+		dev->subdev_mode = false;
+		return 0;
+	}
+
+	if (subdev_mode != 1) {
+		dev_err(&dev->intf->dev,
+			"Invalid subdev_mode=%d (expected 0 or 1)\n",
+			subdev_mode);
+		return -EINVAL;
+	}
+
+	if (!dev->i2c_registered || !dev->v4l2_registered)
+		return -EINVAL;
+
+	dev->subdev_mode = true;
+
+	/*
+	 * Run the hardware bootstrap before creating either I2C subdevice
+	 * client so PCA9539A releases peripheral reset on cold boot and
+	 * ADV7604 ESDP/DPP are translated to 0x2B/0x3B throughout replay.
+	 */
+	ret = gc550_bootstrap_hw(dev);
+	if (ret < 0 || !dev->is_bootstrapped) {
+		dev_err(&dev->intf->dev,
+			"Pre-subdevice hardware bootstrap failed: %d\n",
+			ret < 0 ? ret : -EIO);
+		dev->is_bootstrapped = false;
+		return ret < 0 ? ret : -EIO;
+	}
+
+	/*
+	 * Upstream probe callbacks modify physical device state:
+	 * adv76xx_probe() reinitializes the pixel-bus format via
+	 * adv76xx_core_init() (IO[0x03] = 0x00, 8-bit SDR 4:2:2) and
+	 * adv7511_probe() powers down the HDMI transmitter (Main[0x41] |= 0x40).
+	 * dev->is_bootstrapped remains true to record that hardware bootstrap
+	 * completed and prevent any subsequent replay of gc550_init_blob.
+	 * The ADV7604 pixel-bus format is reconfigured immediately after probe.
+	 */
+
+	dev->sd_adv7604 = v4l2_i2c_new_subdev_board(&dev->v4l2_dev,
+						    &dev->i2c_adap,
+						    &gc550_adv7604_board_info,
+						    NULL);
+	if (!dev->sd_adv7604) {
+		dev_err(&dev->intf->dev,
+			"Failed to register adv7604 subdevice on I2C 0x%02x\n",
+			gc550_adv7604_board_info.addr);
+		return -ENODEV;
+	}
+
+	dev->sd_adv7511 = v4l2_i2c_new_subdev_board(&dev->v4l2_dev,
+						    &dev->i2c_adap,
+						    &gc550_adv7511_board_info,
+						    NULL);
+	if (!dev->sd_adv7511) {
+		dev_err(&dev->intf->dev,
+			"Failed to register adv7511-v4l2 subdevice on I2C 0x%02x\n",
+			gc550_adv7511_board_info.addr);
+		gc550_subdevs_unregister(dev);
+		return -ENODEV;
+	}
+
+	dev_info(&dev->intf->dev,
+		 "Registered V4L2 subdevices: %s (0x%02x) and %s (0x%02x)\n",
+		 dev->sd_adv7604->name, gc550_adv7604_board_info.addr,
+		 dev->sd_adv7511->name, gc550_adv7511_board_info.addr);
+
+	ret = gc550_configure_adv7604(dev);
+	if (ret < 0) {
+		dev_err(&dev->intf->dev,
+			"Failed to configure adv7604 post-probe format: %d\n",
+			ret);
+		gc550_subdevs_unregister(dev);
+		return ret;
+	}
+
+	return 0;
+}
+
 int gc550_video_register(struct gc550_dev *dev)
 {
 	struct vb2_queue *vq = &dev->vb_queue;
@@ -1210,13 +1583,26 @@ int gc550_video_register(struct gc550_dev *dev)
 	dev->pix_fmt.quantization = V4L2_QUANTIZATION_LIM_RANGE;
 	dev->pix_fmt.xfer_func = V4L2_XFER_FUNC_709;
 
+	/* Initialize Media Device before registering v4l2_dev and subdevices */
+	media_device_usb_init(&dev->mdev, dev->udev, "AVerMedia Live Gamer Extreme (GC550)");
+	dev->v4l2_dev.mdev = &dev->mdev;
+
 	dev->v4l2_dev.release = gc550_v4l2_release;
 	ret = v4l2_device_register(&dev->intf->dev, &dev->v4l2_dev);
-	if (ret < 0)
+	if (ret < 0) {
+		media_device_cleanup(&dev->mdev);
+		dev->v4l2_dev.mdev = NULL;
 		return ret;
+	}
 	kref_get(&dev->ref);
 	dev->v4l2_registered = true;
 	dev->v4l2_ref_held = true;
+
+	ret = gc550_subdevs_register(dev);
+	if (ret < 0) {
+		gc550_video_unregister(dev);
+		return ret;
+	}
 
 	vq->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	vq->io_modes = VB2_MMAP | VB2_USERPTR | VB2_DMABUF | VB2_READ;
@@ -1247,19 +1633,66 @@ int gc550_video_register(struct gc550_dev *dev)
 			    V4L2_CAP_READWRITE;
 	video_set_drvdata(vdev, dev);
 
+	/* Initialize Media Entity Sink Pad on Video Node */
+	vdev->entity.function = MEDIA_ENT_F_IO_V4L;
+	dev->pad.flags = MEDIA_PAD_FL_SINK;
+	ret = media_entity_pads_init(&vdev->entity, 1, &dev->pad);
+	if (ret < 0) {
+		dev_err(&dev->intf->dev, "Failed to init media entity pad: %d\n", ret);
+		gc550_video_unregister(dev);
+		return ret;
+	}
+	dev->vdev_pads_inited = true;
+
 	ret = video_register_device(vdev, VFL_TYPE_VIDEO, -1);
 	if (ret < 0) {
 		gc550_video_unregister(dev);
 		return ret;
 	}
 
+	/* Establish Immutable Pad Link from ADV7604 Source Pad 6 to Video Node Sink Pad 0 */
+	if (dev->subdev_mode && dev->sd_adv7604) {
+		ret = media_create_pad_link(&dev->sd_adv7604->entity,
+					    ADV7604_PAD_SOURCE,
+					    &vdev->entity,
+					    0,
+					    MEDIA_LNK_FL_ENABLED | MEDIA_LNK_FL_IMMUTABLE);
+		if (ret < 0) {
+			dev_err(&dev->intf->dev,
+				"Failed to create media link from ADV7604 to video node: %d\n",
+				ret);
+			gc550_video_unregister(dev);
+			return ret;
+		}
+	}
+
+	/* Register Media Device to Expose /dev/mediaX */
+	ret = media_device_register(&dev->mdev);
+	if (ret < 0) {
+		dev_err(&dev->intf->dev, "Failed to register media device: %d\n", ret);
+		gc550_video_unregister(dev);
+		return ret;
+	}
+	dev->mdev_registered = true;
+
 	return 0;
 }
 
 void gc550_video_unregister(struct gc550_dev *dev)
 {
+	if (dev->mdev_registered) {
+		media_device_unregister(&dev->mdev);
+		dev->mdev_registered = false;
+	}
 	if (video_is_registered(&dev->vdev))
 		video_unregister_device(&dev->vdev);
+	if (dev->vdev_pads_inited) {
+		media_entity_cleanup(&dev->vdev.entity);
+		dev->vdev_pads_inited = false;
+	}
+	gc550_subdevs_unregister(dev);
+	media_device_cleanup(&dev->mdev);
+	dev->v4l2_dev.mdev = NULL;
 	if (dev->v4l2_registered) {
 		v4l2_device_unregister(&dev->v4l2_dev);
 		dev->v4l2_registered = false;

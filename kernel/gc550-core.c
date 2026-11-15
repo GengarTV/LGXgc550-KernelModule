@@ -75,11 +75,18 @@ static int gc550_probe(struct usb_interface *intf,
 	if (ret < 0)
 		goto err_put_usb;
 
+	ret = gc550_i2c_adapter_init(dev);
+	if (ret < 0) {
+		dev_err(&intf->dev, "Failed to initialize I2C adapter: %d\n",
+			ret);
+		goto err_free_cmd;
+	}
+
 	ret = gc550_video_register(dev);
 	if (ret < 0) {
 		dev_err(&intf->dev, "Failed to register V4L2 video device: %d\n",
 			ret);
-		goto err_free_cmd;
+		goto err_free_i2c;
 	}
 
 	ret = gc550_audio_register(dev);
@@ -99,6 +106,8 @@ static int gc550_probe(struct usb_interface *intf,
 
 err_unreg_video:
 	gc550_video_unregister(dev);
+err_free_i2c:
+	gc550_i2c_adapter_free(dev);
 err_free_cmd:
 	gc550_cmd_free(dev);
 err_put_usb:
@@ -140,6 +149,7 @@ static void gc550_disconnect(struct usb_interface *intf)
 	gc550_video_unregister(dev);
 	mutex_unlock(&dev->v4l2_lock);
 
+	gc550_i2c_adapter_free(dev);
 	gc550_diag_debugfs_remove(dev);
 	gc550_cmd_free(dev);
 	kref_put(&dev->ref, gc550_dev_release);

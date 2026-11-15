@@ -62,16 +62,32 @@ Because a bug in a kernel USB/V4L2 driver can cause a kernel panic or soft locku
    ```bash
    sudo modprobe videodev videobuf2-common videobuf2-v4l2 videobuf2-vmalloc snd-pcm
    sudo rmmod gc550 2>/dev/null || true
-   sudo insmod ./gc550.ko
+   # Load in standard mode or with subdevice mode (subdev_mode=1):
+   sudo insmod ./gc550.ko subdev_mode=1
    v4l2-ctl --list-devices
    # Use /dev/avermedia-gc550 when the udev rule is installed; otherwise set DEV to
    # the actual /dev/videoX node listed under "AVerMedia GC550" by v4l2-ctl --list-devices
    # (do not assume /dev/video0 belongs to the GC550):
    DEV=/dev/avermedia-gc550 # or DEV=/dev/videoX from v4l2-ctl --list-devices
    v4l2-ctl --all -d "$DEV"
+
+   # --- V4L2 Streaming Verification ---
+   # Note on DV timings negotiation vs isolated capture:
+   # 1. Isolated capture test (disables automatic timing negotiation):
+   v4l2-ctl -d "$DEV" --stream-mmap --stream-count=60 --stream-no-query
+
+   # 2. Capture test with standard userspace DV timing negotiation:
+   # (v4l2-ctl queries incoming signal, compares with G_DV_TIMINGS, and invokes S_DV_TIMINGS if different):
    v4l2-ctl -d "$DEV" --stream-mmap --stream-count=60
+
+   # Note: v4l2-ctl --set-fmt-video changes the capture buffer geometry on /dev/videoX;
+   # it does NOT change DV timings or program the ADV7604 hardware. To explicitly set timings:
+   # v4l2-ctl -d "$DEV" --set-dv-bt-timings query
+
    sudo dmesg | grep -i gc550
    ```
+
+   For a complete reference on ADV7604 register lifecycle states, `v4l2-ctl` automatic timing negotiation, and Media Controller topology, see [`docs/ADV7604-HARDWARE-LIFECYCLE.md`](docs/ADV7604-HARDWARE-LIFECYCLE.md).
 
 ---
 

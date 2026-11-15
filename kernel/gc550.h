@@ -26,7 +26,10 @@
 #include <linux/wait.h>
 #include <linux/workqueue.h>
 #include <linux/videodev2.h>
+#include <media/media-device.h>
+#include <media/media-entity.h>
 #include <media/v4l2-device.h>
+#include <media/v4l2-subdev.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-event.h>
@@ -34,6 +37,7 @@
 #include <media/videobuf2-vmalloc.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
+#include <linux/i2c.h>
 #include "gc550-diag.h"
 
 #define GC550_DRIVER_NAME	"gc550"
@@ -142,8 +146,14 @@ struct gc550_dev {
 	struct usb_device *udev;
 	struct usb_interface *intf;
 
-	/* V4L2 Subsystem */
+	/* V4L2 & Media Controller Subsystem */
+	struct media_device mdev;
+	struct media_pad pad;
+	bool mdev_registered;
+	bool vdev_pads_inited;
 	struct v4l2_device v4l2_dev;
+	struct v4l2_subdev *sd_adv7604;
+	struct v4l2_subdev *sd_adv7511;
 	struct video_device vdev;
 	struct vb2_queue vb_queue;
 	struct v4l2_pix_format pix_fmt;
@@ -168,8 +178,13 @@ struct gc550_dev {
 	bool streaming;
 	bool disconnected;
 	bool is_bootstrapped;
+	bool subdev_mode;
 	bool v4l2_registered;
 	bool v4l2_ref_held;
+
+	/* Linux I2C Adapter */
+	struct i2c_adapter i2c_adap;
+	bool i2c_registered;
 
 	/* ALSA Audio Subsystem */
 	struct snd_card *snd_card;
@@ -223,6 +238,11 @@ void gc550_parse_stream_chunk(struct gc550_dev *dev, const u8 *data, size_t len)
 int gc550_audio_register(struct gc550_dev *dev);
 void gc550_audio_unregister(struct gc550_dev *dev);
 void gc550_audio_push_samples(struct gc550_dev *dev, const u8 *data, size_t len);
+
+/* Function Prototypes - gc550-i2c.c */
+int gc550_i2c_adapter_init(struct gc550_dev *dev);
+void gc550_i2c_adapter_free(struct gc550_dev *dev);
+
 void gc550_dev_release(struct kref *ref);
 
 #endif /* _GC550_H_ */

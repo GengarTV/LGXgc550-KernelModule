@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased] - Phase 2C5D Hardware Validation & Register Provenance
+
+### Added
+- **Media Controller Infrastructure & Subdevice Graph (`subdev_mode=1`)**:
+  - Registered `/dev/mediaX` media device exposing `adv7604` (RX) and `adv7511` (TX) subdevices with an immutable link `adv7604:6 -> "AVerMedia GC550":0 [ENABLED,IMMUTABLE]`.
+  - Implemented V4L2 DV timings ioctl suite (`vidioc_g_dv_timings`, `vidioc_s_dv_timings`, `vidioc_query_dv_timings`, `vidioc_enum_dv_timings`, `vidioc_dv_timings_cap`).
+  - Added subdevice pad format synchronization propagating negotiated timings to ADV7604 Pad 6.
+
+### Verified
+- **Exhaustive Bootstrap Register Provenance Audit**:
+  - Parsed all 6,576 operations in `gc550_init_blob` and confirmed cold bootstrap baseline values: `IO[0x00] = 0x08` (step 2681), `IO[0x01] = 0x06` (step 2683), `CP[0x91] = 0x50` (step 2653).
+  - Proved that post-bootstrap driver code leaves these registers untouched.
+  - Resolved pre-measurement discrepancy in Phase 2C5D-B: identified that `v4l2-ctl --stream-mmap` automatically invokes `VIDIOC_S_DV_TIMINGS` before queuing buffers; the 480p60 capture in Phase 2C5D-A set `IO[0x00]=0x0a` and `IO[0x01]=0x05`, which remained intact in hardware.
+- **Physical Multi-Resolution Validation (Phase 2C5D-A)**:
+  - Validated four broadcast resolutions (1080p60, 720p60, 576p50, 480p60) on bare-metal Titan: 0 desyncs, 0 URB errors, `swap_mode = 0`, compliant broadcast luma ($Y \in [16..235]$), 0.00% white saturation ($Y=255$), and 1:1 scale visual verification in `mpv`.
+- **Physical S_DV_TIMINGS Hardware Validation (Phase 2C5D-B)**:
+  - Verified explicit `v4l2-ctl --set-dv-bt-timings query` from 480p to 1080p60: `IO[0x00]` updated to `0x1e`, `CP[0xff]` transitioned from `0x28` to `0x08` (locked to TMDS, free-run disabled), while pixel bus order (`IO[0x04] = 0x42`) and SDR mode (`IO[0x03] = 0x80`) remained strictly preserved.
+  - Verified simultaneous video and ALSA audio capture (48 kHz stereo) with zero errors.
+
+### Documented
+- Added [`docs/ADV7604-HARDWARE-LIFECYCLE.md`](docs/ADV7604-HARDWARE-LIFECYCLE.md) documenting verified register lifecycle, bootstrap provenance, and testing guidance for `--stream-no-query`.
+
 ## [0.1.3] - 2026-11-06
 
 ### Added
