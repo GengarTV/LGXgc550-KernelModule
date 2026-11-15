@@ -137,31 +137,34 @@ Make sure you have `git`, `make`, `dkms`, and your distribution's kernel headers
   sudo dnf install kernel-devel kernel-headers make gcc git dkms
   ```
 
-### 2. Clone & Run the Smart Installer
+### 2. Clone & Run the Modern DKMS Installer
 ```bash
 git clone https://github.com/GengarTV/lgx2KernelLevel.git
 cd lgx2KernelLevel
 ./install.sh
 ```
 
-`./install.sh` automatically detects your Linux distribution and selects the best installation method:
-1. **On Arch Linux / CachyOS / EndeavourOS / Manjaro (Default: `PKGBUILD` + `pacman` + `DKMS`)**:
-   - Runs `makepkg -si` using the included [`PKGBUILD`](PKGBUILD) to build and install the native **`avermedia-gc550-dkms`** package.
-   - `pacman` automatically installs `dkms` if missing, tracks ownership of all files (`/usr/src/avermedia-gc550-0.1.3` and `/usr/lib/udev/rules.d/99-avermedia-gc550.rules`), compiles `gc550.ko` via its DKMS hook, and loads the module immediately.
-2. **On Other Linux Distributions (Ubuntu, Debian, Fedora, etc. — Default: Direct Kernel Build)**:
-   - Compiles `gc550.ko` against `/lib/modules/$(uname -r)/build` (`make modules && make install`), installs the udev rules, and loads the module immediately.
+`./install.sh` is an idempotent, distro-aware DKMS installer that:
+1. Performs preflight validation of kernel headers, build toolchains (GCC or Clang/LLVM), DKMS binaries, and subdevice runtime dependencies (`adv7604`, `adv7511_v4l2`).
+2. Populates a clean DKMS source directory at `/usr/src/gc550-<version>` containing strictly the required kernel build manifest (excluding non-code documentation and private files).
+3. Registers the driver with DKMS (`gc550/<version>`), builds the kernel module for the target kernel, and installs it via DKMS (`dkms install --force`).
+4. Installs the udev rule (`/etc/udev/rules.d/99-avermedia-gc550.rules`) granting user-access and `/dev/avermedia-gc550` symlinks.
+5. Safely detects if `gc550` is already loaded in kernel memory, avoiding disruptive unloads while capture is active.
 
-### Persistence Across Reboots & Kernel Updates (Rolling-Release Friendly)
-- **Zero-Touch Kernel Updates (DKMS)**: On Arch/CachyOS (or when installed with `--dkms`), `pacman` owns the `avermedia-gc550-dkms` package and automatically runs its DKMS hook (`70-dkms-install.hook`) whenever a new kernel is installed. It recompiles and installs `gc550.ko` for the new kernel automatically in the background (~2 seconds)—you never have to manually recompile after a system update.
-- **Automatic Plug-and-Play Loading**: The module embeds the USB device alias (`usb:v07CAp4710...` and `usb:v07CAp0550...`). Across reboots, the Linux kernel and `udev` automatically load `gc550.ko` on demand the moment the GC550 is plugged into a USB port.
-
-### Other Installer Commands
+### Installer & Uninstaller Commands
 ```bash
-./install.sh --arch       # Force Arch/CachyOS PKGBUILD (makepkg -si) installation
-./install.sh --dkms       # Force standalone DKMS installation (for non-Arch distros)
-./install.sh --direct     # Force direct compile & install for current kernel only
-./install.sh --uninstall  # Unload and remove driver, pacman/DKMS package, and udev rules
+./install.sh          # Full automated DKMS build and installation
+./install.sh --check  # Non-destructive preflight audit (makes no system changes)
+./install.sh --help   # Display available options and usage
+./uninstall.sh        # Cleanly and idempotently remove DKMS registration, source tree, and udev rules
 ```
+
+### Persistence Across Reboots & Kernel Updates (Zero-Touch DKMS)
+- **Zero-Touch Kernel Updates**: Because `AUTOINSTALL="yes"` is configured in `dkms.conf`, your distribution's package manager (`pacman`, `apt`, `dnf`) triggers DKMS hooks automatically upon kernel upgrades. DKMS recompiles and signs `gc550.ko` in the background for the newly installed kernel.
+- **Subdevice Registration (`subdev_mode`)**:
+  - `subdev_mode=0` (default): Legacy mode, standalone V4L2 and ALSA capture nodes.
+  - `subdev_mode=1`: Enables Media Controller graph (`/dev/mediaX`), registering in-tree `adv7604` (RX) and `adv7511` (TX) subdevices with Pad 6 format and DV timing synchronization.
+  - To enable permanently, add `options gc550 subdev_mode=1` to `/etc/modprobe.d/gc550.conf`.
 
 ---
 
@@ -231,15 +234,19 @@ If any step above fails, see **[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)** for 
 ├── PROTOCOL.md              # USB 3.0 protocol & hardware specification (by @ChrisAJS)
 ├── TODO.md                  # Roadmap & technical design notes (including low-resolution support)
 ├── TROUBLESHOOTING.md       # Common build, USB, video, and audio troubleshooting guide
-├── dkms.conf                # DKMS configuration
-├── install.sh               # Smart distro-aware installer & uninstaller script
+├── dkms.conf                # DKMS package configuration
+├── install.sh               # Idempotent DKMS installer and preflight audit script
+├── uninstall.sh             # Idempotent DKMS uninstaller script
 └── kernel/
     ├── gc550.h              # Driver structures, constants, and register definitions
     ├── gc550-core.c         # USB probe/disconnect & lifecycle management
     ├── gc550-cmd.c          # FX3 USB Bulk (0x01/0x81) to I2C bridge & safe bootstrap
+    ├── gc550-i2c.c          # I2C adapter & ADV7604/ADV7511 subdevice client registration
     ├── gc550-regtables.h    # Complete 6,576-step GC550 hardware wake-up table (Crypto-stripped)
-    ├── gc550-video.c        # V4L2 capture device, straddle parser & 16 KiB DMA swap reorderer
-    └── gc550-audio.c        # ALSA PCM capture device for demuxed HDMI audio
+    ├── gc550-video.c        # V4L2 capture device, straddle parser, media graph & DV timings
+    ├── gc550-audio.c        # ALSA PCM capture device for demuxed HDMI audio
+    ├── gc550-diag.h         # Diagnostic sysfs attribute definitions
+    └── gc550-diag.c         # Diagnostic sysfs register and counter interfaces
 ```
 
 ---

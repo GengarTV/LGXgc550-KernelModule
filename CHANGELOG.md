@@ -6,9 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [Unreleased] - Phase 2C5D Hardware Validation & Register Provenance
+## [Unreleased] - Phase 2C6A DKMS Modernization & Phase 2C5D Hardware Validation
 
 ### Added
+- **Modernized DKMS Installation Framework (`install.sh` & `uninstall.sh`)**:
+  - Refactored `install.sh` into an idempotent, robust DKMS packaging and installation tool supporting preflight audits (`./install.sh --check`), automated Clang/LLVM toolchain discovery, and non-destructive handling of actively loaded modules.
+  - Standardized DKMS package name as `gc550` and installed source directory at `/usr/src/gc550-<version>`.
+  - Implemented strict 12-file source manifest packaging, verifying that documentation, git metadata, and private handover documents are never copied to `/usr/src` or exposed.
+  - Implemented standalone idempotent `uninstall.sh` to unregister and remove DKMS modules, source trees, and udev rules without impacting unrelated kernel packages.
 - **Media Controller Infrastructure & Subdevice Graph (`subdev_mode=1`)**:
   - Registered `/dev/mediaX` media device exposing `adv7604` (RX) and `adv7511` (TX) subdevices with an immutable link `adv7604:6 -> "AVerMedia GC550":0 [ENABLED,IMMUTABLE]`.
   - Implemented V4L2 DV timings ioctl suite (`vidioc_g_dv_timings`, `vidioc_s_dv_timings`, `vidioc_query_dv_timings`, `vidioc_enum_dv_timings`, `vidioc_dv_timings_cap`).

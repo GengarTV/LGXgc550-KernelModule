@@ -109,9 +109,8 @@ If you ever update or trim the initialization sequence:
 - Follow the standard **Linux Kernel Coding Style** (8-character tabs, `linux/checkpatch.pl` conventions).
 - Ensure `make` succeeds without warnings on both **GCC** and **Clang (`LLVM=1`)**.
 - When bumping the driver version, update:
-  - `GC550_DRIVER_VERSION` in `kernel/gc550.h`
+  - `GC550_DRIVER_VERSION` in `kernel/gc550.h` (automatically detected by `install.sh` and `uninstall.sh`)
   - `PACKAGE_VERSION` in `dkms.conf`
   - `pkgver` in `PKGBUILD`
-  - `PKG_VER` in `install.sh`
   - Package source path and supported-format details in `README.md`
   - [`CHANGELOG.md`](CHANGELOG.md)

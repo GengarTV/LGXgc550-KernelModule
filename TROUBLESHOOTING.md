@@ -44,6 +44,54 @@ UEFI **Secure Boot** is enabled, which blocks unsigned out-of-tree kernel module
 
 ---
 
+### Preflight Audit Fails (`./install.sh --check`)
+**Symptom:**
+`./install.sh --check` reports missing kernel headers, missing DKMS, or missing subdevice dependencies (`adv7604`, `adv7511_v4l2`).
+**Fix:**
+- Verify kernel headers for your exact running kernel:
+  ```bash
+  ls -d /lib/modules/$(uname -r)/build
+  ```
+- Ensure DKMS and Clang/LLVM are installed:
+  ```bash
+  sudo pacman -S dkms clang lld llvm   # Arch / CachyOS
+  sudo apt install dkms build-essential # Ubuntu / Debian
+  ```
+- Ensure subdevice drivers are present in your kernel:
+  ```bash
+  modinfo adv7604
+  modinfo adv7511_v4l2 || modinfo adv7511-v4l2
+  ```
+
+---
+
+### Active Module Running Older Code After DKMS Install
+**Symptom:**
+`./install.sh` finishes with exit code 0, but `cat /sys/module/gc550/srcversion` differs from `modinfo -F srcversion gc550`.
+**Cause:**
+Per Linux driver development best practices, the installer does not forcefully unload modules while applications or streams may be active. The updated binary is installed to `/lib/modules/$(uname -r)/updates/dkms/gc550.ko.zst`, but kernel memory retains the previously loaded module.
+**Fix:**
+When the capture pipeline is idle, reload the module manually:
+```bash
+sudo modprobe -r gc550
+sudo modprobe gc550 subdev_mode=1
+```
+Or simply reboot your system.
+
+---
+
+### Clean Removal or DKMS Reinstallation
+**Symptom:**
+DKMS registration is in an inconsistent state, or you wish to completely remove the driver.
+**Fix:**
+Run the dedicated uninstaller:
+```bash
+./uninstall.sh
+```
+This cleanly removes `/usr/src/gc550-<version>`, unregisters the package from DKMS, removes `/etc/udev/rules.d/99-avermedia-gc550.rules`, and executes `depmod -a`.
+
+---
+
 ## 2. USB & Device Detection Issues
 
 ### Device Plugged In, But No `/dev/videoX` Appears

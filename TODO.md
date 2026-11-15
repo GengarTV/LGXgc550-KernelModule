@@ -158,7 +158,12 @@ Hardware investigation (Phases B2, C1–C3, D1, D2.1, and D2.2.7) concluded. Con
 
 ## Long-Term Goal: Distribution & Mainline Linux Kernel (`linux-media`) Upstreaming
 
-### Phase 1: Arch User Repository (AUR) Release
+### Phase 1: Distribution & DKMS Packaging
+- [x] **Phase 2C6A – DKMS Architecture & Modernized Installer**:
+  - Standardized DKMS package name as `gc550` with source tree at `/usr/src/gc550-<version>`.
+  - Refactored `install.sh` to provide automated preflight checking (`--check`), strict 12-file source isolation (excluding non-code and private docs), and non-destructive active module detection.
+  - Implemented standalone idempotent `uninstall.sh`.
+  - Verified local DKMS build, signing, and installation on CachyOS `7.3.4-1-cachyos` (Clang/LLVM).
 - [ ] **Publish `avermedia-gc550-dkms` to the AUR**:
   - Adapt the existing [`PKGBUILD`](PKGBUILD) to fetch tagged releases (or `-git` HEAD) from `https://github.com/GengarTV/lgx2KernelLevel` so Arch Linux, CachyOS, EndeavourOS, and Manjaro users can install the driver directly via `paru -S avermedia-gc550-dkms` or `yay -S avermedia-gc550-dkms`.
 
