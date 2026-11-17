@@ -1,6 +1,6 @@
 # ADV7604 Hardware Lifecycle, Register Provenance & V4L2 DV Timings Reference
 
-**Project:** AVerMedia Live Gamer Extreme (GC550) Native Linux Kernel Driver (`lgx2KernelLevel`)  
+**Project:** AVerMedia Live Gamer Extreme (GC550) Native Linux Kernel Driver (`LGXgc550-KernelModule` / `gc550.ko`)
 **Target Hardware:** AVerMedia GC550 (`07ca:4710` / `07ca:0550`)  
 **Authoritative Reference:** Phase 2C5D Read-Only Register Provenance Audit & Hardware Validation  
 **Evidence Classification:** `Confirmed` (Register dumps, I2C traces, and kernel source audits)
@@ -24,7 +24,7 @@ This document establishes the verified hardware lifecycle and register state pro
 
 ## 2. ADV7604 Cold-Bootstrap Register State
 
-The GC550 hardware is initialized over the Cypress FX3 USB-to-I2C bridge (`EP 0x01 OUT` / `EP 0x81 IN`) by replaying `gc550_init_blob` (53,146 bytes, 6,576 discrete steps in `kernel/gc550-regtables.h`).
+The GC550 hardware is initialized over the Cypress FX3 USB-to-I2C bridge (`EP 0x01 OUT` / `EP 0x81 IN`) by replaying `gc550_init_blob` in `kernel/gc550-regtables.h` (originally 53,146 bytes across 6,576 steps; optimized in Phase 2C6D/E to 21,458 bytes across 2,615 steps without modifying any ADV7604 timing or scan registers; see [`PHASE2C6E-FINAL-REPORT.md`](PHASE2C6E-FINAL-REPORT.md)).
 
 An exhaustive, read-only programmatic audit of all 6,576 operations confirmed the exact write points for the primary timing and mode registers:
 

@@ -39,10 +39,12 @@ Ensure you have `git`, `make`, `dkms`, and your distribution's kernel headers in
 
 ### 2. Clone & Run the Modern DKMS Installer
 ```bash
-git clone https://github.com/GengarTV/lgx2KernelLevel.git
-cd lgx2KernelLevel
+git clone https://github.com/GengarTV/LGXgc550-KernelModule.git
+cd LGXgc550-KernelModule
 ./install.sh
 ```
+
+*(Note for local development environments: if working from an existing local clone under `/home/gengartv/lgx2KernelLevel`, run `./install.sh` directly from that directory).*
 
 `./install.sh` is an idempotent, distro-aware DKMS installer that:
 1. Validates kernel headers, build toolchains (GCC or Clang/LLVM), DKMS, and subdevice dependencies.
@@ -107,7 +109,7 @@ If any issue occurs, see **[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)**.
 2. **USB 3.0 Required:** 1080p60 YUYV video requires ~250 MB/s of USB bandwidth. USB 2.0 ports/cables are unsupported.
 3. **Audio Requires Video Streaming:** The GC550 hardware multiplexes HDMI audio into the USB 3.0 video stream. The video node must be actively streaming (e.g. open in OBS) for audio samples to flow into ALSA.
 4. **Manual Resolution Matching:** The driver supports 1080p, 720p, 576p, 480p, and 640x480. Match your OBS canvas / capture resolution to your input signal.
-5. **Cold Bootstrap Delay (~3.3 s):** The very first time `/dev/videoX` is opened after USB insertion, the driver sends 6,576 setup commands (~3.3 s). Subsequent opens start instantaneously.
+5. **Cold Bootstrap Delay (~1.1 s):** The very first time `/dev/videoX` is opened after USB insertion, the driver replays the optimized 2,615-command bootstrap sequence (~1.15 s measured cold bootstrap; a 60.23% reduction in register operations from the original 6,576-step sequence, providing an indicative ~65% startup latency improvement over the historical ~3.3 s baseline). Subsequent opens start instantaneously.
 
 ---
 
@@ -115,6 +117,7 @@ If any issue occurs, see **[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)**.
 
 Detailed technical documentation is organized in the [`docs/`](docs/) directory:
 
+- **[`docs/PHASE2C6E-FINAL-REPORT.md`](docs/PHASE2C6E-FINAL-REPORT.md)** — Comprehensive Phase 2C6E final report: 60.23% register operation reduction (2,615 operations), 1.15 s cold bootstrap, and bare-metal 1080p60 video & 48 kHz stereo audio validation.
 - **[`docs/HARDWARE-COMPATIBILITY.md`](docs/HARDWARE-COMPATIBILITY.md)** — Comprehensive hardware matrix, tested HDMI sources, bare-metal lab testbeds (Titan & Niri), and V4L2 compliance test results.
 - **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** — In-depth driver architecture, buffer reordering, ALSA audio demuxing, safe AT88SC crypto isolation, and Media Controller subdevice graph.
 - **[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)** — Latency analysis (`50 ms` glass-to-glass), 3-frame pipeline breakdown, memory bandwidth savings (~750 MB/s DRAM reduction), and endurance benchmarks.
@@ -158,7 +161,7 @@ Detailed technical documentation is organized in the [`docs/`](docs/) directory:
     ├── gc550-core.c         # USB probe/disconnect & lifecycle management
     ├── gc550-cmd.c          # FX3 USB Bulk (0x01/0x81) to I2C bridge & safe bootstrap
     ├── gc550-i2c.c          # I2C adapter & ADV7604/ADV7511 subdevice client registration
-    ├── gc550-regtables.h    # Complete 6,576-step GC550 hardware wake-up table (Crypto-stripped)
+    ├── gc550-regtables.h    # Optimized 2,615-step GC550 hardware wake-up table (Crypto-stripped, Phase 2C6D/E)
     ├── gc550-video.c        # V4L2 capture device, straddle parser, media graph & DV timings
     ├── gc550-audio.c        # ALSA PCM capture device for demuxed HDMI audio
     ├── gc550-diag.h         # Diagnostic sysfs attribute definitions
@@ -189,7 +192,7 @@ If you are on **Windows**, **macOS**, or want the **userspace driver (`lgx2users
 
 This project contains original Linux kernel driver code and incorporates research, protocol definitions, and hardware initialization data derived from the upstream [**`ChrisAJS/lgx2userspace`**](https://github.com/ChrisAJS/lgx2userspace) project:
 
-1. **Original Project Code (`GPL-2.0-only OR MIT`):** All original Linux kernel driver code, headers, build scripts, and packaging authored for `lgx2KernelLevel` (Copyright (C) 2026 Øystein Lie) are dual-licensed under **GPL-2.0-only** ([`LICENSE-GPL-2.0`](LICENSE-GPL-2.0)) or **MIT** ([`LICENSE-MIT`](LICENSE-MIT)). The kernel module binary declares `MODULE_LICENSE("Dual MIT/GPL")`.
+1. **Original Project Code (`GPL-2.0-only OR MIT`):** All original Linux kernel driver code, headers, build scripts, and packaging authored for `LGXgc550-KernelModule` (formerly `lgx2KernelLevel`, Copyright (C) 2026 Øystein Lie) are dual-licensed under **GPL-2.0-only** ([`LICENSE-GPL-2.0`](LICENSE-GPL-2.0)) or **MIT** ([`LICENSE-MIT`](LICENSE-MIT)). The kernel module binary declares `MODULE_LICENSE("Dual MIT/GPL")`.
 2. **Upstream lgx2userspace Material (`MIT License`):** Foundational USB 3.0 protocol reverse-engineering, hardware initialization tables, BT.1120 SAV/EAV checksum validation formulas, and AT88SC CryptoMemory research are derived from [`ChrisAJS/lgx2userspace`](https://github.com/ChrisAJS/lgx2userspace) (Copyright 2021 Chris Sawczuk and contributors, licensed under the MIT License, [`LICENCE.md`](LICENCE.md)).
 3. **Upstream Protocol Specification:** [`PROTOCOL.md`](PROTOCOL.md) is preserved verbatim as historical documentation under its original author's copyright and MIT licensing.
 

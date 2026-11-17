@@ -2,7 +2,7 @@
 
 ## Project Licensing Policy
 
-The `lgx2KernelLevel` project provides a native Linux kernel module (`gc550.ko`) for the AVerMedia Live Gamer Extreme (GC550).
+The `LGXgc550-KernelModule` project (formerly `lgx2KernelLevel`) provides a native Linux kernel module (`gc550.ko`) for the AVerMedia Live Gamer Extreme (GC550).
 
 ### 1. Original Project Code (`GPL-2.0-only OR MIT`)
 

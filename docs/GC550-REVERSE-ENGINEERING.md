@@ -9,7 +9,7 @@ This document consolidates the hardware, USB, command-protocol, capture-stream, 
 This reference synthesizes two distinct bodies of work, which are explicitly distinguished throughout this document:
 
 1. **Upstream Protocol & Binary Reverse Engineering (ChrisAJS)** — Foundational analysis of the Windows x64 driver (`avmu3_x64.sys`, `.rdata` RTTI class strings and Ghidra decompilation) and USB captures from the sibling **AVerMedia Live Gamer Extreme 2 (GC551)** (`07ca:0551`) and **Live Gamer Extreme (GC550)** (`07ca:4710` / `07ca:0550`), documented in the upstream [`PROTOCOL.md`](../PROTOCOL.md) reference by Chris Sawczuk (`@ChrisAJS`) and contributors to `lgx2userspace` (licensed under the permissive MIT License; see [`LICENCE.md`](../LICENCE.md)).
-2. **GC550 Linux Kernel Driver Implementation & Verification (`lgx2KernelLevel`)** — Source-verified findings from the native V4L2 + ALSA kernel driver ([`kernel/gc550.h`](../kernel/gc550.h), [`kernel/gc550-core.c`](../kernel/gc550-core.c), [`kernel/gc550-cmd.c`](../kernel/gc550-cmd.c), [`kernel/gc550-video.c`](../kernel/gc550-video.c), [`kernel/gc550-audio.c`](../kernel/gc550-audio.c), [`kernel/gc550-regtables.h`](../kernel/gc550-regtables.h)), hardware runtime testing on GC550 (`07ca:4710`), and offline structural verification of the initialization table and stream parser. Original kernel driver code authored by Øystein Lie is dual-licensed under `GPL-2.0-only OR MIT` (`MODULE_LICENSE("Dual MIT/GPL")`; see [`LICENSES.md`](../LICENSES.md)).
+2. **GC550 Linux Kernel Driver Implementation & Verification (`LGXgc550-KernelModule`, formerly `lgx2KernelLevel`)** — Source-verified findings from the native V4L2 + ALSA kernel driver ([`kernel/gc550.h`](../kernel/gc550.h), [`kernel/gc550-core.c`](../kernel/gc550-core.c), [`kernel/gc550-cmd.c`](../kernel/gc550-cmd.c), [`kernel/gc550-video.c`](../kernel/gc550-video.c), [`kernel/gc550-audio.c`](../kernel/gc550-audio.c), [`kernel/gc550-regtables.h`](../kernel/gc550-regtables.h)), hardware runtime testing on GC550 (`07ca:4710`), and offline structural verification of the initialization table and stream parser. Original kernel driver code authored by Øystein Lie is dual-licensed under `GPL-2.0-only OR MIT` (`MODULE_LICENSE("Dual MIT/GPL")`; see [`LICENSES.md`](../LICENSES.md)).
 
 The upstream [`PROTOCOL.md`](../PROTOCOL.md) remains preserved in its original form at the repository root as the historical upstream protocol record under its original MIT license. Note that correcting licensing metadata does not imply the driver is immediately ready for Linux kernel upstream submission, which continues to require correctness hardening, checkpatch review, and multi-resolution validation.
 
@@ -458,6 +458,17 @@ An exhaustive, read-only programmatic audit of all 6,576 operations in `gc550_in
 Across steps 2684 through 6576, no further writes to `IO[0x00]`, `IO[0x01]`, or `CP[0x91]` occur anywhere in `gc550_init_blob`. Furthermore, post-bootstrap operations (`gc550_bootstrap_hw()`, `adv76xx_core_init()`, and `gc550_configure_adv7604()`) leave these three registers untouched. Immediately following driver probe, the hardware holds `IO[0x00]=0x08`, `IO[0x01]=0x06`, and `CP[0x91]=0x50`.
 
 For complete documentation of subsequent runtime register transitions under userspace `v4l2-ctl` automatic timing negotiation and explicit `VIDIOC_S_DV_TIMINGS` execution, see [`docs/ADV7604-HARDWARE-LIFECYCLE.md`](ADV7604-HARDWARE-LIFECYCLE.md).
+
+### 5. Register Table Optimization & Cold-Bootstrap Acceleration (Phase 2C6D / Phase 2C6E)
+
+In Phase 2C6D and Phase 2C6E, `gc550_init_blob` underwent programmatic auditing and conservative optimization:
+- **Baseline Metrics:** 6,576 transactions, 53,146 bytes.
+- **Optimized Metrics:** **2,615 transactions**, **21,458 bytes** (**-60.23% operations**, **-59.62% byte footprint**).
+- **Safety Reconciliation:** All 99 immediate transition readbacks were preserved to guarantee peripheral settling margins; essential ADV7511 status clears and ADV7604 W1C clears were retained; five redundant ADV7511 audio FIFO interrupt clears were eliminated following forensic verification.
+- **Measured Hardware Bootstrap:** Cold bootstrap duration was measured in-kernel at **1,145.65 ms** (~1.15 s), an indicative $2.88\times$ acceleration compared to the historical ~3.3 s baseline (with 0 I2C bus errors, 0 NACKs, and 0 timeouts).
+- **Bare-Metal Functional Validation:** Verified with 1080p60 YUYV video streaming (120 consecutive frames, ~2.0 s capture, 0 desyncs, 0 URB errors, 0 dropped frames, native 1:1 visual confirmation) and direct ALSA hardware audio capture (48 kHz stereo S16_LE, 10.0 s, 480,000 frames, 0 XRUNs).
+
+For the exhaustive completion report and reconciliation data, see [`docs/PHASE2C6E-FINAL-REPORT.md`](PHASE2C6E-FINAL-REPORT.md).
 
 ---
 

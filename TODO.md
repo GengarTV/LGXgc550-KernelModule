@@ -85,7 +85,7 @@ This file tracks planned features, technical design notes, and future experiment
 - [ ] Measure total frame periods (in 16 KiB blocks) for 720p, 576p, 480p, and 640x480 to verify DMA block parity.
 
 ### 6. Potential Upstream-Readiness Work
-- [ ] Evaluate minimal cold-bootstrap subset reduction (streamlining 6,576 steps to remove redundant status polls).
+- [x] **Evaluate minimal cold-bootstrap subset reduction (Phase 2C6D & 2C6E Complete)**: Reduced register table from 6,576 steps (53,146 B) to 2,615 steps (21,458 B, -60.2% operations), accelerating cold bootstrap to 1.15 s with verified 1080p60 video and 48 kHz stereo audio capture. See [`docs/PHASE2C6E-FINAL-REPORT.md`](docs/PHASE2C6E-FINAL-REPORT.md).
 - [ ] Dynamic frame interval detection based on ADV7604 TMDS / vertical frequency measurements.
 - [ ] Full Linux Media Subsystem checkpatch and API compliance review.
 
@@ -165,7 +165,7 @@ Hardware investigation (Phases B2, C1–C3, D1, D2.1, and D2.2.7) concluded. Con
   - Implemented standalone idempotent `uninstall.sh`.
   - Verified local DKMS build, signing, and installation on CachyOS `7.3.4-1-cachyos` (Clang/LLVM).
 - [ ] **Publish `avermedia-gc550-dkms` to the AUR**:
-  - Adapt the existing [`PKGBUILD`](PKGBUILD) to fetch tagged releases (or `-git` HEAD) from `https://github.com/GengarTV/lgx2KernelLevel` so Arch Linux, CachyOS, EndeavourOS, and Manjaro users can install the driver directly via `paru -S avermedia-gc550-dkms` or `yay -S avermedia-gc550-dkms`.
+  - Adapt the existing [`PKGBUILD`](PKGBUILD) to fetch tagged releases (or `-git` HEAD) from `https://github.com/GengarTV/LGXgc550-KernelModule` so Arch Linux, CachyOS, EndeavourOS, and Manjaro users can install the driver directly via `paru -S avermedia-gc550-dkms` or `yay -S avermedia-gc550-dkms`.
 
 ### Phase 2: Mainline Linux Kernel Submission (`drivers/media/usb/gc550/`)
 Target subsystem: **Linux Media Subsystem (`linux-media@vger.kernel.org`)**, maintained by Hans Verkuil (V4L2) and Mauro Carvalho Chehab.
@@ -183,7 +183,9 @@ Target subsystem: **Linux Media Subsystem (`linux-media@vger.kernel.org`)**, mai
     - Centralized buffer completion helper (`gc550_finish_buffer`) ensures monotonic timestamps (`ktime_get_ns()`) and frame sequence numbering across both DONE and ERROR states.
     - Buffer reservation locked to SAV boundary (`video_pos == 0`); mid-frame buffer attachment eliminated.
     - Validated `vb2_plane_vaddr` check in `gc550_buf_prepare()`.
-- [ ] **3. Trim Redundant Polling Loops from `gc550-regtables.h`**:
-  - As documented in [`PROTOCOL.md`](PROTOCOL.md), only the first ~1,730 steps of the 6,576-command capture are actual chip initialization; the remaining ~4,800 steps are repeated status-poll reads from the Windows USB capture. Trimming the redundant polling reads will reduce [`kernel/gc550-regtables.h`](kernel/gc550-regtables.h) by ~75% and cut cold bootstrap time from `~3.3 s` to **`< 0.9 s`**.
+- [x] **3. Trim Redundant Polling Loops from `gc550-regtables.h` (Phase 2C6D & 2C6E Complete)**:
+  - Phase 2C6D implemented the audited conservative removal manifest (`manifest_option2_corrected_proposal.json`), reducing the register table from 6,576 operations (53,146 bytes) to 2,615 operations (21,458 bytes, -60.23% operations, -59.62% bytes).
+  - All 99 transition readbacks, essential W1C clear operations, and active configurations were preserved.
+  - Phase 2C6E validated cold bootstrap (measured 1,145.65 ms vs historical ~3.3 s baseline), 1080p60 video streaming (120 consecutive frames, 0 desyncs, 0 URB errors, 0 dropped frames, native 1:1 visual confirmation), and direct ALSA hardware audio capture (48 kHz stereo S16_LE, 10.0 s, 0 XRUNs). Full details documented in [`docs/PHASE2C6E-FINAL-REPORT.md`](docs/PHASE2C6E-FINAL-REPORT.md).
 - [ ] **4. Pass `scripts/checkpatch.pl --strict`**:
   - Verify zero style warnings against the target `media_stage` kernel tree before submitting the `[PATCH 0/2] media: usb: gc550: Add AVerMedia Live Gamer Extreme (GC550) driver` series to `linux-media@vger.kernel.org`.
