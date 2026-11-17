@@ -41,7 +41,7 @@
 #include "gc550-diag.h"
 
 #define GC550_DRIVER_NAME	"gc550"
-#define GC550_DRIVER_VERSION	"0.1.3"
+#define GC550_DRIVER_VERSION	"0.5.0"
 
 /* USB Vendor & Product IDs */
 #define USB_VID_AVERMEDIA	0x07ca

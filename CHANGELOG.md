@@ -6,9 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [Unreleased] - Phase 2C6A DKMS Modernization & Phase 2C5D Hardware Validation
+## [0.5.0] - 2026-11-17
 
 ### Added
+- **Optimized Hardware Bootstrap (Phase 2C6D & 2C6E)**:
+  - Implemented audited Option 2 conservative register table optimization in `kernel/gc550-regtables.h`, reducing bootstrap operations from 6,576 to 2,615 (-60.23%) and blob footprint from 53,146 to 21,458 bytes (-59.62%).
+  - Reduced in-memory driver core size from 147,456 bytes to 118,784 bytes (-19.44%).
+  - Accelerated cold bootstrap startup latency to 1,145.65 ms (~1.15 s), an indicative ~65% speedup over historical ~3.3 s baseline.
+  - Verified physical 1080p60 YUYV capture on bare-metal Linux (`7.3.4-1-cachyos`, LLVM/Clang): 120 consecutive frames, 0 dropped frames, 0 URB errors, 0 desyncs, and native 1:1 visual verification.
+  - Verified physical 48 kHz stereo ALSA audio capture (`hw:GC550Audio,0`, 10.0 s, 480,000 frames, 0 XRUNs).
+  - Documented exhaustive audit and reconciliation in [`docs/PHASE2C6E-FINAL-REPORT.md`](docs/PHASE2C6E-FINAL-REPORT.md).
 - **Documentation Restructuring & Deep-Dive Modularization**:
   - Streamlined front-page `README.md` to prioritize fast installation, quick verification, and end-user onboarding.
   - Relocated in-depth technical analysis into dedicated modular documents:
