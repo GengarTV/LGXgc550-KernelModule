@@ -49,8 +49,6 @@ DKMS_MANIFEST_KERNEL=(
 	"gc550-audio.c"
 	"gc550-cmd.c"
 	"gc550-core.c"
-	"gc550-diag.c"
-	"gc550-diag.h"
 	"gc550.h"
 	"gc550-i2c.c"
 	"gc550-regtables.h"
@@ -128,7 +126,7 @@ Please install your distribution's matching kernel headers:
 			error "Required kernel source file missing from repository: kernel/${f}"
 		fi
 	done
-	ok "All 12 required source manifest files are present."
+	ok "All 10 required source manifest files are present."
 
 	# 6. Critical Security Rule: Private document exclusion verification
 	# Ensure docs/PROJECT-HANDOVER.md can NEVER enter the packaging manifest

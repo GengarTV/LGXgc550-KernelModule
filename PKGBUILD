@@ -3,7 +3,7 @@
 
 pkgname=avermedia-gc550-dkms
 _pkgname=gc550
-pkgver=0.5.0
+pkgver=0.6.0
 pkgrel=1
 pkgdesc="AVerMedia Live Gamer Extreme (GC550) V4L2 + ALSA USB 3.0 Capture Kernel Driver (DKMS)"
 arch=('x86_64' 'aarch64')
@@ -17,7 +17,7 @@ package() {
 	local src_root="${startdir}"
 	local dkms_dest="${pkgdir}/usr/src/${_pkgname}-${pkgver}"
 
-	# Strict 12-file DKMS source manifest (matching install.sh allowlist)
+	# Strict 10-file DKMS source manifest (matching install.sh allowlist)
 	local manifest_root=(
 		"Makefile"
 		"Kbuild"
@@ -27,8 +27,6 @@ package() {
 		"gc550-audio.c"
 		"gc550-cmd.c"
 		"gc550-core.c"
-		"gc550-diag.c"
-		"gc550-diag.h"
 		"gc550.h"
 		"gc550-i2c.c"
 		"gc550-regtables.h"

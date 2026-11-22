@@ -10,10 +10,11 @@ Native, out-of-tree Linux kernel module providing plug-and-play video (`V4L2`) a
 
 | Component | Status | Details |
 |---|---|---|
+| **Driver Version** | **`0.6.0`** | Unified unconditional V4L2/Media Controller architecture with native kernel diagnostics (zero module parameters). |
 | **Supported Devices** | **GC550 (`07ca:4710`, `07ca:0550`)** | Fully supported and bare-metal verified on CachyOS / Arch Linux. *(Note: For the LGX2 / GC551 `07ca:0551`, use upstream [`lgx2userspace`](https://github.com/ChrisAJS/lgx2userspace)).* |
 | **V4L2 Video** | **1080p60 down to 480p60** | Uncompressed `YUYV` 4:2:2 video capture (`/dev/videoX` & `/dev/avermedia-gc550`). |
 | **ALSA Audio** | **48 kHz 16-bit Stereo** | Hardware HDMI LPCM audio demuxed directly to native ALSA card (`hw:GC550Audio,0`), visible in PipeWire / PulseAudio. |
-| **Media Controller** | **`/dev/mediaX` (`subdev_mode=1`)** | Optional subdevice graph linking in-tree `adv7604` (RX) and `adv7511` (TX) with V4L2 DV timings. |
+| **Media Controller** | **`/dev/mediaX` (Unconditional)** | Unified subdevice graph linking in-tree `adv7604` (RX) to both `AVerMedia GC550` (`/dev/videoX`) and `adv7511-v4l2` (TX) via `[ENABLED,IMMUTABLE]` links with V4L2 DV timings. |
 | **End-to-End Latency** | **`~50 ms` (~3 frames @ 60 Hz)** | Minimum latency pipeline saving ~750 MB/s DRAM bandwidth over userspace daemons. |
 
 ---
@@ -48,7 +49,7 @@ cd LGXgc550-KernelModule
 
 `./install.sh` is an idempotent, distro-aware DKMS installer that:
 1. Validates kernel headers, build toolchains (GCC or Clang/LLVM), DKMS, and subdevice dependencies.
-2. Isolates a clean 12-file source tree into `/usr/src/gc550-<version>`.
+2. Isolates a clean 10-file source tree into `/usr/src/gc550-<version>`.
 3. Registers with DKMS, builds for the active kernel, and installs via `dkms install --force`.
 4. Installs the udev rule (`/etc/udev/rules.d/99-avermedia-gc550.rules`) granting user access and `/dev/avermedia-gc550` symlinks.
 5. Preserves running capture streams safely without forced module unloading.
@@ -63,13 +64,9 @@ cd LGXgc550-KernelModule
 
 ### Persistence Across Kernel Updates (Zero-Touch DKMS)
 - **Automatic Rebuilds:** Because `AUTOINSTALL="yes"` is enabled in `dkms.conf`, your package manager (`pacman`, `apt`, `dnf`) automatically triggers DKMS to recompile `gc550.ko` in the background whenever a new kernel is installed.
-- **Subdevice Registration (`subdev_mode`):**
-  - `subdev_mode=0` (default): Standalone V4L2 and ALSA capture nodes.
-  - `subdev_mode=1`: Enables Media Controller subdevice graph (`/dev/mediaX`) and ADV7604/ADV7511 bindings.
-  - To enable permanently, create `/etc/modprobe.d/gc550.conf` with:
-    ```text
-    options gc550 subdev_mode=1
-    ```
+- **Unified Subdevice Architecture (No Module Parameters):**
+  - The legacy `subdev_mode` module parameter has been removed (U2-B02-S1). `gc550.ko` now unconditionally registers the `/dev/mediaX` Media Controller graph and binds the in-tree `adv7604` and `adv7511-v4l2` I2C subdevices during USB probe.
+  - If you previously created `/etc/modprobe.d/gc550.conf` containing `options gc550 subdev_mode=...`, remove that line before reloading the updated module.
 
 ---
 
@@ -109,7 +106,7 @@ If any issue occurs, see **[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md)**.
 2. **USB 3.0 Required:** 1080p60 YUYV video requires ~250 MB/s of USB bandwidth. USB 2.0 ports/cables are unsupported.
 3. **Audio Requires Video Streaming:** The GC550 hardware multiplexes HDMI audio into the USB 3.0 video stream. The video node must be actively streaming (e.g. open in OBS) for audio samples to flow into ALSA.
 4. **Manual Resolution Matching:** The driver supports 1080p, 720p, 576p, 480p, and 640x480. Match your OBS canvas / capture resolution to your input signal.
-5. **Cold Bootstrap Delay (~1.1 s):** The very first time `/dev/videoX` is opened after USB insertion, the driver replays the optimized 2,615-command bootstrap sequence (~1.15 s measured cold bootstrap; a 60.23% reduction in register operations from the original 6,576-step sequence, providing an indicative ~65% startup latency improvement over the historical ~3.3 s baseline). Subsequent opens start instantaneously.
+5. **Cold Bootstrap Delay (~1.1 s):** When a cold (uninitialized) GC550 is probed after USB insertion, the driver runs the 27-stage, 2,615-command bootstrap sequence (`~1.15 s` measured cold bootstrap; a 60.23% reduction in register operations from the original 6,576-step sequence, with the packed init blob compacted to 20,082 bytes in U2-B01-S3). Already-initialized boards skip cold replay via board-state detection, and subsequent opens start instantaneously.
 
 ---
 
@@ -161,11 +158,9 @@ Detailed technical documentation is organized in the [`docs/`](docs/) directory:
     ├── gc550-core.c         # USB probe/disconnect & lifecycle management
     ├── gc550-cmd.c          # FX3 USB Bulk (0x01/0x81) to I2C bridge & safe bootstrap
     ├── gc550-i2c.c          # I2C adapter & ADV7604/ADV7511 subdevice client registration
-    ├── gc550-regtables.h    # Optimized 2,615-step GC550 hardware wake-up table (Crypto-stripped, Phase 2C6D/E)
-    ├── gc550-video.c        # V4L2 capture device, straddle parser, media graph & DV timings
-    ├── gc550-audio.c        # ALSA PCM capture device for demuxed HDMI audio
-    ├── gc550-diag.h         # Diagnostic sysfs attribute definitions
-    └── gc550-diag.c         # Diagnostic sysfs register and counter interfaces
+    ├── gc550-regtables.h    # 27-stage, 2,615-step GC550 hardware wake-up table (symbolic board ops + 20,082 B compacted blob, Crypto-stripped)
+    ├── gc550-video.c        # V4L2 capture device, straddle parser, media graph, DV timings & native diagnostics
+    └── gc550-audio.c        # ALSA PCM capture device for demuxed HDMI audio
 ```
 
 ---

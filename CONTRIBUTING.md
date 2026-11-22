@@ -18,15 +18,16 @@ Thank you for your interest in contributing to or maintaining the **AVerMedia Li
 
 ## 2. Driver Architecture Overview
 
-The module (`gc550.ko`) is split into four C compilation units and two headers in [`kernel/`](kernel/):
+The module (`gc550.ko`) is split into five C compilation units and two headers in [`kernel/`](kernel/):
 
 | File | Responsibility |
 |---|---|
 | [`kernel/gc550.h`](kernel/gc550.h) | USB IDs (`07ca:4710`, `07ca:0550`), endpoint addresses (`0x01`, `0x81`, `0x83`), I2C slave addresses (`ADV7604`, `ADV7511`, `PCA9539A`, `TLV320AIC3x`, `ECP3 FPGA`), and `struct gc550_dev`. |
 | [`kernel/gc550-core.c`](kernel/gc550-core.c) | `struct usb_driver` lifecycle (`gc550_probe`, `gc550_disconnect`), USB 3.0 speed verification, and V4L2/ALSA registration teardown. |
-| [`kernel/gc550-cmd.c`](kernel/gc550-cmd.c) | Cypress FX3 Bulk `0x01 OUT` / `0x81 IN` command & I2C bridge, warm board-state detection (`gc550_detect_board_state`), cold bootstrap replay (`gc550_run_init_sequence`), automatic input color-space config (`gc550_set_auto_input_colorspace`), and HDMI signal status logging (`gc550_log_signal_status`). |
-| [`kernel/gc550-regtables.h`](kernel/gc550-regtables.h) | Packed binary array (`gc550_init_blob`) of the 6,576 Crypto-stripped USB-to-I2C initialization steps. |
-| [`kernel/gc550-video.c`](kernel/gc550-video.c) | V4L2 `video_device` & `videobuf2-vmalloc` queue, asynchronous USB Bulk `0x83 IN` URB pool (`8 × 512 KiB`), cross-URB marker straddle parser (`gc550_parse_ordered_bytes`), and 16 KiB FX3 DMA swap reorderer (`gc550_parse_stream_chunk`). |
+| [`kernel/gc550-cmd.c`](kernel/gc550-cmd.c) | Cypress FX3 Bulk `0x01 OUT` / `0x81 IN` command & I2C bridge, warm board-state detection (`gc550_detect_board_state`), 27-stage hardware bootstrap (`gc550_run_init_sequence`), and automatic input color-space config (`gc550_set_auto_input_colorspace`). |
+| [`kernel/gc550-i2c.c`](kernel/gc550-i2c.c) | Linux I2C adapter (`gc550-i2c`) tunneling 7-bit I2C transactions over the FX3 USB command bridge for `adv7604` and `adv7511-v4l2`. |
+| [`kernel/gc550-regtables.h`](kernel/gc550-regtables.h) | 27-stage, 2,615-step Crypto-stripped initialization sequence combining symbolic Class 1 board register definitions and the compacted 20,082-byte `gc550_init_blob[]` slices (U2-B01-S1/S2/S3). |
+| [`kernel/gc550-video.c`](kernel/gc550-video.c) | V4L2 `video_device` & `videobuf2-vmalloc` queue, unconditional `adv7604`/`adv7511-v4l2` subdevice lifecycle and Media Controller graph, DV timings ioctls, asynchronous USB Bulk `0x83 IN` URB pool (`8 × 512 KiB`, direct `urb->context = dev`), cross-URB marker straddle parser (`gc550_parse_ordered_bytes`), 16 KiB FX3 DMA swap reorderer (`gc550_parse_stream_chunk`), and native kernel logging (`dev_dbg_ratelimited()` / `VIDIOC_LOG_STATUS`). |
 | [`kernel/gc550-audio.c`](kernel/gc550-audio.c) | ALSA `snd_card` & `snd_pcm` capture subdriver (`48 kHz`, `16-bit LE Stereo`). Receives demultiplexed `00 FF FF 58` PCM payloads from `gc550-video.c`. |
 
 For deep-dive protocol details (BT.1120 SAV/EAV markers, checksums, and I2C register maps), read [`PROTOCOL.md`](PROTOCOL.md).
@@ -60,11 +61,12 @@ Because a bug in a kernel USB/V4L2 driver can cause a kernel panic or soft locku
    ```
 3. **Load & Verify in the VM:**
    ```bash
-   sudo modprobe videodev videobuf2-common videobuf2-v4l2 videobuf2-vmalloc snd-pcm
+   sudo modprobe videodev videobuf2-common videobuf2-v4l2 videobuf2-vmalloc snd-pcm adv7604 adv7511-v4l2
    sudo rmmod gc550 2>/dev/null || true
-   # Load in standard mode or with subdevice mode (subdev_mode=1):
-   sudo insmod ./gc550.ko subdev_mode=1
+   # Load unified subdevice module (no module parameters):
+   sudo insmod ./gc550.ko
    v4l2-ctl --list-devices
+   media-ctl -d /dev/mediaX -p # replace /dev/mediaX with the GC550 media node from v4l2-ctl --list-devices
    # Use /dev/avermedia-gc550 when the udev rule is installed; otherwise set DEV to
    # the actual /dev/videoX node listed under "AVerMedia GC550" by v4l2-ctl --list-devices
    # (do not assume /dev/video0 belongs to the GC550):

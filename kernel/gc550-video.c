@@ -31,7 +31,6 @@
  *    each 32 KiB pair back into proper order.
  */
 
-#include <linux/moduleparam.h>
 #include <linux/slab.h>
 #include <linux/unaligned.h>
 #include <linux/media-bus-format.h>
@@ -42,11 +41,6 @@
 #include "gc550.h"
 
 #define GC550_MAX_FRAME_SPAN	(GC550_FRAME_SIZE + 0x4000)
-
-static int subdev_mode;
-module_param(subdev_mode, int, 0444);
-MODULE_PARM_DESC(subdev_mode,
-		 "V4L2 subdevice registration mode (0=disabled/legacy default, 1=register adv7604 and adv7511 subdevices)");
 
 /*
  * ADV7604 platform data:
@@ -240,13 +234,7 @@ static void gc550_finish_buffer(struct gc550_dev *dev,
 	vb2_buffer_done(&buf->vb.vb2_buf, state);
 }
 
-#ifdef CONFIG_GC550_DIAG
-static void gc550_abort_video_frame(struct gc550_dev *dev,
-				    const struct gc550_dispatch_ctx *dctx,
-				    u8 term_reason, bool is_pair_buf)
-#else
 static void gc550_abort_video_frame(struct gc550_dev *dev)
-#endif
 {
 	struct gc550_stream_parser *p = &dev->parser;
 	struct gc550_buffer *abort_buf = NULL;
@@ -259,25 +247,13 @@ static void gc550_abort_video_frame(struct gc550_dev *dev)
 	}
 	spin_unlock_irqrestore(&dev->queue_lock, flags);
 
-	if (abort_buf) {
-#ifdef CONFIG_GC550_DIAG
-		gc550_diag_emit_frame_complete(dev, dctx, abort_buf,
-					       VB2_BUF_STATE_ERROR,
-					       term_reason, is_pair_buf);
-#endif
+	if (abort_buf)
 		gc550_finish_buffer(dev, abort_buf, VB2_BUF_STATE_ERROR);
-	}
 
 	p->video_pos = 0;
 }
 
-#ifdef CONFIG_GC550_DIAG
-static void gc550_reserve_video_frame(struct gc550_dev *dev,
-				      const struct gc550_dispatch_ctx *dctx,
-				      bool is_pair_buf)
-#else
 static void gc550_reserve_video_frame(struct gc550_dev *dev)
-#endif
 {
 	struct gc550_stream_parser *p = &dev->parser;
 	struct gc550_buffer *abort_buf = NULL;
@@ -291,12 +267,9 @@ static void gc550_reserve_video_frame(struct gc550_dev *dev)
 	spin_unlock_irqrestore(&dev->queue_lock, flags);
 
 	if (abort_buf) {
-#ifdef CONFIG_GC550_DIAG
-		gc550_diag_emit_frame_complete(dev, dctx, abort_buf,
-					       VB2_BUF_STATE_ERROR,
-					       GC550_TERM_UNCLOSED_SAV_ABORT,
-					       is_pair_buf);
-#endif
+		dev_dbg_ratelimited(&dev->intf->dev,
+				    "Aborting unclosed frame (seq=%llu, video_pos=%u)\n",
+				    p->current_frame_sequence, p->video_pos);
 		gc550_finish_buffer(dev, abort_buf, VB2_BUF_STATE_ERROR);
 	}
 
@@ -304,10 +277,6 @@ static void gc550_reserve_video_frame(struct gc550_dev *dev)
 	p->sav_b0 = p->hdr_buf[0];
 	p->video_pos = 0;
 	p->state = GC550_STATE_VIDEO_DATA;
-
-#ifdef CONFIG_GC550_DIAG
-	gc550_diag_emit_marker_sav(dev, dctx, p->hdr_buf, true, is_pair_buf);
-#endif
 
 	spin_lock_irqsave(&dev->queue_lock, flags);
 	if (!list_empty(&dev->buf_list)) {
@@ -345,13 +314,7 @@ static void gc550_append_video_bytes(struct gc550_dev *dev,
 				     GC550_MAX_FRAME_SPAN + 1);
 }
 
-#ifdef CONFIG_GC550_DIAG
-static void gc550_complete_video_frame(struct gc550_dev *dev, u8 eav_c0,
-				       const struct gc550_dispatch_ctx *dctx,
-				       bool is_pair_buf)
-#else
 static void gc550_complete_video_frame(struct gc550_dev *dev, u8 eav_c0)
-#endif
 {
 	struct gc550_stream_parser *p = &dev->parser;
 	struct gc550_buffer *buf = NULL;
@@ -375,31 +338,20 @@ static void gc550_complete_video_frame(struct gc550_dev *dev, u8 eav_c0)
 	 */
 	if (p->video_pos <= GC550_SWAP_SPAN_LIMIT && eav_c0 != p->sav_b0) {
 		p->swap_votes++;
-#ifdef CONFIG_GC550_DIAG
-		gc550_diag_emit_swap_vote(dev, dctx, p->sav_b0, eav_c0,
-					  p->swap_votes, is_pair_buf);
-#endif
+		dev_dbg_ratelimited(&dev->intf->dev,
+				    "FX3 DMA swap vote %u/2 (sav=0x%02x, eav=0x%02x, span=%u)\n",
+				    p->swap_votes, p->sav_b0, eav_c0,
+				    p->video_pos);
 		if (p->swap_votes >= 2) {
 			p->swap_mode = !p->swap_mode;
 			p->swap_votes = 0;
 			p->pair_pos = 0;
-#ifdef CONFIG_GC550_DIAG
-			gc550_diag_emit_swap_toggle(dev, dctx, !p->swap_mode,
-						    p->swap_mode, is_pair_buf);
-#endif
 			dev_info_ratelimited(&dev->intf->dev,
 					     "FX3 16 KiB DMA buffer order switched to %s\n",
 					     p->swap_mode ? "SWAPPED" : "NORMAL");
 		}
-		if (buf) {
-#ifdef CONFIG_GC550_DIAG
-			gc550_diag_emit_frame_complete(dev, dctx, buf,
-						       VB2_BUF_STATE_ERROR,
-						       GC550_TERM_SWAP_CANDIDATE_ERROR,
-						       is_pair_buf);
-#endif
+		if (buf)
 			gc550_finish_buffer(dev, buf, VB2_BUF_STATE_ERROR);
-		}
 		p->video_pos = 0;
 		return;
 	}
@@ -414,15 +366,12 @@ static void gc550_complete_video_frame(struct gc550_dev *dev, u8 eav_c0)
 		      p->video_pos <= frame_size + GC550_FRAME_SPAN_TOLERANCE);
 
 	if (!valid_span) {
-		if (buf) {
-#ifdef CONFIG_GC550_DIAG
-			gc550_diag_emit_frame_complete(dev, dctx, buf,
-						       VB2_BUF_STATE_ERROR,
-						       GC550_TERM_INVALID_SPAN_ERROR,
-						       is_pair_buf);
-#endif
+		dev_dbg_ratelimited(&dev->intf->dev,
+				    "Rejecting frame span %u bytes (expected %zu +/- %u)\n",
+				    p->video_pos, frame_size,
+				    GC550_FRAME_SPAN_TOLERANCE);
+		if (buf)
 			gc550_finish_buffer(dev, buf, VB2_BUF_STATE_ERROR);
-		}
 		p->video_pos = 0;
 		return;
 	}
@@ -436,12 +385,6 @@ static void gc550_complete_video_frame(struct gc550_dev *dev, u8 eav_c0)
 					vbuf[i] = gc550_yuyv_black[i & 3];
 		}
 
-#ifdef CONFIG_GC550_DIAG
-		gc550_diag_emit_frame_complete(dev, dctx, buf,
-					       VB2_BUF_STATE_DONE,
-					       GC550_TERM_NORMAL_DONE,
-					       is_pair_buf);
-#endif
 		gc550_finish_buffer(dev, buf, VB2_BUF_STATE_DONE);
 	}
 
@@ -483,15 +426,8 @@ static void gc550_handle_marker(struct gc550_dev *dev, u8 marker_type)
 /**
  * gc550_parse_ordered_bytes - Core byte-stream parser with cross-URB marker straddle support
  */
-#ifdef CONFIG_GC550_DIAG
-static void gc550_parse_ordered_bytes(struct gc550_dev *dev,
-				      const u8 *data, size_t len,
-				      const struct gc550_dispatch_ctx *dctx,
-				      bool is_pair_buf)
-#else
 static void gc550_parse_ordered_bytes(struct gc550_dev *dev,
 				      const u8 *data, size_t len)
-#endif
 {
 	static const u8 prefix_bytes[3] = { 0x00, 0xff, 0xff };
 	struct gc550_stream_parser *p = &dev->parser;
@@ -503,24 +439,15 @@ static void gc550_parse_ordered_bytes(struct gc550_dev *dev,
 			p->hdr_buf[p->hdr_pos++] = data[i++];
 			if (p->hdr_pos == 4) {
 				if (gc550_sav_hdr_valid(p->hdr_buf)) {
-#ifdef CONFIG_GC550_DIAG
-					gc550_reserve_video_frame(dev, dctx, is_pair_buf);
-#else
 					gc550_reserve_video_frame(dev);
-#endif
 				} else {
 					p->desync_count++;
-#ifdef CONFIG_GC550_DIAG
-					gc550_diag_emit_marker_sav(dev, dctx, p->hdr_buf, false, is_pair_buf);
-					gc550_diag_emit_desync(dev, dctx, GC550_DESYNC_SAV_CHECKSUM,
-							       GC550_MARKER_SAV, p->hdr_buf[0], is_pair_buf);
-#endif
+					dev_dbg_ratelimited(&dev->intf->dev,
+							    "SAV checksum mismatch (desyncs=%u, b0=0x%02x)\n",
+							    p->desync_count,
+							    p->hdr_buf[0]);
 					p->state = GC550_STATE_IDLE;
-#ifdef CONFIG_GC550_DIAG
-					gc550_abort_video_frame(dev, dctx, GC550_TERM_PARSER_ABORT_ERROR, is_pair_buf);
-#else
 					gc550_abort_video_frame(dev);
-#endif
 				}
 			}
 			continue;
@@ -529,35 +456,26 @@ static void gc550_parse_ordered_bytes(struct gc550_dev *dev,
 			p->hdr_buf[p->hdr_pos++] = data[i++];
 			if (p->hdr_pos == 5) {
 				if (gc550_eav_hdr_valid(p->hdr_buf)) {
-#ifdef CONFIG_GC550_DIAG
-					gc550_diag_emit_marker_eav(dev, dctx, p->hdr_buf, true, is_pair_buf);
-#endif
 					if (p->hdr_buf[0] != p->sav_b0) {
 						p->desync_count++;
-#ifdef CONFIG_GC550_DIAG
-						gc550_diag_emit_desync(dev, dctx, GC550_DESYNC_SEQ_MISMATCH,
-								       GC550_MARKER_EAV, p->hdr_buf[0], is_pair_buf);
-#endif
+						dev_dbg_ratelimited(&dev->intf->dev,
+								    "EAV seq mismatch (desyncs=%u, sav=0x%02x, eav=0x%02x, pos=%u)\n",
+								    p->desync_count,
+								    p->sav_b0,
+								    p->hdr_buf[0],
+								    p->video_pos);
 					}
-#ifdef CONFIG_GC550_DIAG
-					gc550_complete_video_frame(dev, p->hdr_buf[0], dctx, is_pair_buf);
-#else
 					gc550_complete_video_frame(dev, p->hdr_buf[0]);
-#endif
 					p->state = GC550_STATE_POST_EAV;
 				} else {
 					p->desync_count++;
-#ifdef CONFIG_GC550_DIAG
-					gc550_diag_emit_marker_eav(dev, dctx, p->hdr_buf, false, is_pair_buf);
-					gc550_diag_emit_desync(dev, dctx, GC550_DESYNC_EAV_CHECKSUM,
-							       GC550_MARKER_EAV, p->hdr_buf[0], is_pair_buf);
-#endif
+					dev_dbg_ratelimited(&dev->intf->dev,
+							    "EAV checksum mismatch (desyncs=%u, c0=0x%02x, pos=%u)\n",
+							    p->desync_count,
+							    p->hdr_buf[0],
+							    p->video_pos);
 					p->state = GC550_STATE_IDLE;
-#ifdef CONFIG_GC550_DIAG
-					gc550_abort_video_frame(dev, dctx, GC550_TERM_PARSER_ABORT_ERROR, is_pair_buf);
-#else
 					gc550_abort_video_frame(dev);
-#endif
 				}
 			}
 			continue;
@@ -566,9 +484,6 @@ static void gc550_parse_ordered_bytes(struct gc550_dev *dev,
 			p->hdr_buf[p->hdr_pos++] = data[i++];
 			if (p->hdr_pos == 4) {
 				p->audio_rem = get_unaligned_be32(p->hdr_buf);
-#ifdef CONFIG_GC550_DIAG
-				gc550_diag_emit_audio_header(dev, dctx, p->hdr_buf, p->audio_rem, is_pair_buf);
-#endif
 				if (p->audio_rem > 0 && p->audio_rem <= 65536)
 					p->state = GC550_STATE_AUDIO_DATA;
 				else
@@ -672,21 +587,12 @@ static void gc550_parse_ordered_bytes(struct gc550_dev *dev,
 /**
  * gc550_parse_stream_chunk - Top-level entry for Bulk IN 0x83 data with 16 KiB swap support
  */
-#ifdef CONFIG_GC550_DIAG
-void gc550_parse_stream_chunk(struct gc550_dev *dev, const u8 *data, size_t len,
-			      const struct gc550_dispatch_ctx *dctx)
-#else
 void gc550_parse_stream_chunk(struct gc550_dev *dev, const u8 *data, size_t len)
-#endif
 {
 	struct gc550_stream_parser *p = &dev->parser;
 
 	if (!p->swap_mode || !p->pair_buf) {
-#ifdef CONFIG_GC550_DIAG
-		gc550_parse_ordered_bytes(dev, data, len, dctx, false);
-#else
 		gc550_parse_ordered_bytes(dev, data, len);
-#endif
 		return;
 	}
 
@@ -707,28 +613,14 @@ void gc550_parse_stream_chunk(struct gc550_dev *dev, const u8 *data, size_t len)
 			p->pair_pos = 0;
 
 			/* Dispatch Half 1 first */
-#ifdef CONFIG_GC550_DIAG
-			gc550_parse_ordered_bytes(dev,
-						  p->pair_buf + GC550_FX3_DMA_BUF_SIZE,
-						  GC550_FX3_DMA_BUF_SIZE,
-						  dctx, true);
-#else
 			gc550_parse_ordered_bytes(dev,
 						  p->pair_buf + GC550_FX3_DMA_BUF_SIZE,
 						  GC550_FX3_DMA_BUF_SIZE);
-#endif
 
 			/* Dispatch Half 0 second */
-#ifdef CONFIG_GC550_DIAG
-			gc550_parse_ordered_bytes(dev,
-						  p->pair_buf,
-						  GC550_FX3_DMA_BUF_SIZE,
-						  dctx, true);
-#else
 			gc550_parse_ordered_bytes(dev,
 						  p->pair_buf,
 						  GC550_FX3_DMA_BUF_SIZE);
-#endif
 		}
 	}
 }
@@ -736,56 +628,19 @@ void gc550_parse_stream_chunk(struct gc550_dev *dev, const u8 *data, size_t len)
 /* USB Bulk Stream URB Completion Callback */
 static void gc550_urb_complete(struct urb *urb)
 {
-#ifdef CONFIG_GC550_DIAG
-	struct gc550_urb_ctx *ctx = urb->context;
-	struct gc550_dev *dev = ctx ? ctx->dev : NULL;
-	u16 slot_index = ctx ? ctx->slot_index : 0;
-	u64 sub_id = ctx ? ctx->submission_attempt_id : 0;
-	u64 entry_seq = 0;
-	int active = 0, max = 0;
-	u64 start_time = 0;
-	u16 cpu_id = 0;
-	struct gc550_dispatch_ctx dctx;
-#else
 	struct gc550_dev *dev = urb->context;
-#endif
 	unsigned long flags;
 	int ret;
 
 	if (!dev)
 		return;
 
-#ifdef CONFIG_GC550_DIAG
-	active = atomic_inc_return(&dev->diag_concurrency.active_callbacks);
-	max = atomic_read(&dev->diag_concurrency.max_simultaneous);
-	while (active > max && !atomic_try_cmpxchg(&dev->diag_concurrency.max_simultaneous, &max, active))
-		;
-	entry_seq = (u64)atomic64_inc_return(&dev->diag_concurrency.callback_entry_seq);
-	start_time = ktime_get_raw_ns();
-	cpu_id = (u16)raw_smp_processor_id();
-
-	dctx.submission_generation = sub_id;
-	dctx.completion_seq = entry_seq;
-	dctx.slot_index = slot_index;
-	dctx.cpu_id = cpu_id;
-	dctx.active_callbacks = (u8)min(active, 255);
-#endif
-
 	spin_lock_irqsave(&dev->stream_lock, flags);
 	if (!dev->streaming || dev->disconnected) {
 		spin_unlock_irqrestore(&dev->stream_lock, flags);
-#ifdef CONFIG_GC550_DIAG
-		gc550_diag_emit_urb_complete(dev, ctx, urb, entry_seq,
-					     active, start_time, cpu_id);
-#endif
-		goto out;
+		return;
 	}
 	spin_unlock_irqrestore(&dev->stream_lock, flags);
-
-#ifdef CONFIG_GC550_DIAG
-	gc550_diag_emit_urb_complete(dev, ctx, urb, entry_seq,
-				     active, start_time, cpu_id);
-#endif
 
 	switch (urb->status) {
 	case 0:
@@ -795,32 +650,21 @@ static void gc550_urb_complete(struct urb *urb)
 					    urb->actual_length,
 					    dev->parser.video_pos,
 					    dev->parser.state);
-#ifdef CONFIG_GC550_DIAG
-			gc550_parse_stream_chunk(dev, urb->transfer_buffer,
-						 urb->actual_length, &dctx);
-#else
 			gc550_parse_stream_chunk(dev, urb->transfer_buffer,
 						 urb->actual_length);
-#endif
 		}
 		break;
 	case -ECONNRESET:
 	case -ENOENT:
 	case -ESHUTDOWN:
-		goto out;
+		return;
 	default:
 		dev_warn_ratelimited(&dev->intf->dev,
 				     "Stream URB status: %d (actual_len=%d)\n",
 				     urb->status, urb->actual_length);
 		/* Gap / USB transfer error: reset parser state */
-#ifdef CONFIG_GC550_DIAG
-		gc550_abort_video_frame(dev, &dctx, GC550_TERM_PARSER_ABORT_ERROR, false);
-		gc550_parser_reset(&dev->parser);
-		gc550_diag_emit_parser_reset(dev, &dctx, GC550_RESET_USB_TRANSFER_ERROR);
-#else
 		gc550_abort_video_frame(dev);
 		gc550_parser_reset(&dev->parser);
-#endif
 		break;
 	}
 
@@ -829,32 +673,14 @@ static void gc550_urb_complete(struct urb *urb)
 	 * here; disconnect/STREAMOFF takes the same lock before killing URBs.
 	 */
 	spin_lock_irqsave(&dev->stream_lock, flags);
-	if (dev->streaming && !dev->disconnected) {
-#ifdef CONFIG_GC550_DIAG
-		sub_id = (u64)atomic64_inc_return(&dev->diag_submission_counter);
-		if (ctx)
-			ctx->submission_attempt_id = sub_id;
-#endif
+	if (dev->streaming && !dev->disconnected)
 		ret = usb_submit_urb(urb, GFP_ATOMIC);
-	} else {
+	else
 		ret = -ESHUTDOWN;
-	}
 	spin_unlock_irqrestore(&dev->stream_lock, flags);
-	if (ret < 0 && ret != -ENODEV && ret != -ESHUTDOWN) {
-#ifdef CONFIG_GC550_DIAG
-		gc550_diag_emit_submission_failure(dev, slot_index, sub_id, ret);
-#endif
+	if (ret < 0 && ret != -ENODEV && ret != -ESHUTDOWN)
 		dev_err_ratelimited(&dev->intf->dev,
 				    "Failed to resubmit stream URB: %d\n", ret);
-	}
-
-out:
-#ifdef CONFIG_GC550_DIAG
-	atomic_dec(&dev->diag_concurrency.active_callbacks);
-	atomic64_inc(&dev->diag_concurrency.callback_exit_seq);
-#else
-	;
-#endif
 }
 
 static void gc550_free_stream_urbs(struct gc550_dev *dev)
@@ -896,21 +722,10 @@ static int gc550_alloc_stream_urbs(struct gc550_dev *dev)
 			return -ENOMEM;
 		}
 
-#ifdef CONFIG_GC550_DIAG
-		dev->urb_ctx[i].dev = dev;
-		dev->urb_ctx[i].slot_index = (u16)i;
-		dev->urb_ctx[i].submission_attempt_id = 0;
-
-		usb_fill_bulk_urb(dev->urbs[i], dev->udev,
-				  usb_rcvbulkpipe(dev->udev, GC550_EP_STREAM_IN),
-				  dev->urb_bufs[i], GC550_URB_BUF_SIZE,
-				  gc550_urb_complete, &dev->urb_ctx[i]);
-#else
 		usb_fill_bulk_urb(dev->urbs[i], dev->udev,
 				  usb_rcvbulkpipe(dev->udev, GC550_EP_STREAM_IN),
 				  dev->urb_bufs[i], GC550_URB_BUF_SIZE,
 				  gc550_urb_complete, dev);
-#endif
 	}
 
 	return 0;
@@ -919,20 +734,10 @@ static int gc550_alloc_stream_urbs(struct gc550_dev *dev)
 static int gc550_submit_stream_urbs(struct gc550_dev *dev)
 {
 	int i, ret;
-#ifdef CONFIG_GC550_DIAG
-	u64 sub_id;
-#endif
 
 	for (i = 0; i < GC550_NUM_URBS; i++) {
-#ifdef CONFIG_GC550_DIAG
-		sub_id = (u64)atomic64_inc_return(&dev->diag_submission_counter);
-		dev->urb_ctx[i].submission_attempt_id = sub_id;
-#endif
 		ret = usb_submit_urb(dev->urbs[i], GFP_KERNEL);
 		if (ret < 0) {
-#ifdef CONFIG_GC550_DIAG
-			gc550_diag_emit_submission_failure(dev, (u16)i, sub_id, ret);
-#endif
 			dev_err(&dev->intf->dev,
 				"Failed to submit stream URB %d: %d\n", i, ret);
 			return ret;
@@ -995,24 +800,16 @@ static void gc550_return_all_buffers(struct gc550_dev *dev,
 				     enum vb2_buffer_state state)
 {
 	struct gc550_buffer *buf, *node;
-	struct gc550_buffer *cur = NULL;
 	LIST_HEAD(done_list);
 	unsigned long flags;
 
 	spin_lock_irqsave(&dev->queue_lock, flags);
 	if (dev->cur_buf) {
-		cur = dev->cur_buf;
 		list_add_tail(&dev->cur_buf->list, &done_list);
 		dev->cur_buf = NULL;
 	}
 	list_splice_tail_init(&dev->buf_list, &done_list);
 	spin_unlock_irqrestore(&dev->queue_lock, flags);
-
-#ifdef CONFIG_GC550_DIAG
-	if (cur && state == VB2_BUF_STATE_ERROR)
-		gc550_diag_emit_frame_complete(dev, NULL, cur, state,
-					       GC550_TERM_STREAMOFF_TEARDOWN, false);
-#endif
 
 	list_for_each_entry_safe(buf, node, &done_list, list) {
 		list_del_init(&buf->list);
@@ -1025,10 +822,6 @@ static void gc550_stop_stream_resources(struct gc550_dev *dev,
 {
 	unsigned long flags;
 
-#ifdef CONFIG_GC550_DIAG
-	gc550_diag_emit_lifecycle(dev, GC550_EVT_STREAM_STOP_BEGIN);
-#endif
-
 	/* The callback resubmit gate is closed before kill waits for callbacks. */
 	mutex_lock(&dev->stream_mutex);
 	spin_lock_irqsave(&dev->stream_lock, flags);
@@ -1038,10 +831,6 @@ static void gc550_stop_stream_resources(struct gc550_dev *dev,
 	mutex_unlock(&dev->stream_mutex);
 
 	gc550_return_all_buffers(dev, state);
-
-#ifdef CONFIG_GC550_DIAG
-	gc550_diag_emit_lifecycle(dev, GC550_EVT_STREAM_STOP_COMPLETE);
-#endif
 }
 
 void gc550_video_stop_device(struct gc550_dev *dev)
@@ -1052,14 +841,9 @@ void gc550_video_stop_device(struct gc550_dev *dev)
 static int gc550_start_streaming(struct vb2_queue *vq, unsigned int count)
 {
 	struct gc550_dev *dev = vb2_get_drv_priv(vq);
+	u32 input_status = 0;
 	unsigned long flags;
 	int ret;
-
-#ifdef CONFIG_GC550_DIAG
-	dev->diag_session_epoch++;
-	gc550_diag_emit_lifecycle(dev, GC550_EVT_STREAM_START_BEGIN);
-	gc550_diag_emit_parser_reset(dev, NULL, GC550_RESET_STREAMON);
-#endif
 
 	gc550_parser_reset(&dev->parser);
 	dev->parser.frame_sequence = 0;
@@ -1070,62 +854,39 @@ static int gc550_start_streaming(struct vb2_queue *vq, unsigned int count)
 		return -ENODEV;
 	}
 
-	if (dev->subdev_mode) {
-		u32 input_status = 0;
+	/*
+	 * Verify that hardware bootstrap completed and both expected
+	 * subdevices are registered. Never replay gc550_bootstrap_hw().
+	 */
+	if (!dev->is_bootstrapped || !dev->sd_adv7604 || !dev->sd_adv7511) {
+		dev_err(&dev->intf->dev,
+			"Cannot stream: unbootstrapped or missing subdevices (is_bootstrapped=%d, adv7604=%p, adv7511=%p)\n",
+			dev->is_bootstrapped, dev->sd_adv7604, dev->sd_adv7511);
+		gc550_return_all_buffers(dev, VB2_BUF_STATE_QUEUED);
+		return -EIO;
+	}
 
-		/*
-		 * Subdevice mode (subdev_mode=1):
-		 * Verify that hardware bootstrap completed and both expected
-		 * subdevices are registered. Never replay gc550_bootstrap_hw().
-		 */
-		if (!dev->is_bootstrapped || !dev->sd_adv7604 || !dev->sd_adv7511) {
-			dev_err(&dev->intf->dev,
-				"Cannot stream in subdevice mode: unbootstrapped or missing subdevices (is_bootstrapped=%d, adv7604=%p, adv7511=%p)\n",
-				dev->is_bootstrapped, dev->sd_adv7604, dev->sd_adv7511);
-			gc550_return_all_buffers(dev, VB2_BUF_STATE_QUEUED);
-			return -EIO;
-		}
+	ret = gc550_configure_adv7604(dev);
+	if (ret < 0) {
+		dev_err(&dev->intf->dev,
+			"Failed to reapply adv7604 format on stream start: %d\n",
+			ret);
+		gc550_return_all_buffers(dev, VB2_BUF_STATE_QUEUED);
+		return ret;
+	}
 
-		ret = gc550_configure_adv7604(dev);
-		if (ret < 0) {
-			dev_err(&dev->intf->dev,
-				"Failed to reapply adv7604 format on stream start: %d\n",
-				ret);
-			gc550_return_all_buffers(dev, VB2_BUF_STATE_QUEUED);
-			return ret;
-		}
-
-		ret = v4l2_subdev_call(dev->sd_adv7604, video, g_input_status,
-				       &input_status);
-		if (ret == 0) {
-			dev_info(&dev->intf->dev,
-				 "ADV7604 input status: 0x%08x (%s%s)\n",
-				 input_status,
-				 (input_status == 0) ? "locked / signal OK" :
-				 ((input_status & V4L2_IN_ST_NO_SIGNAL) ? "no signal " : ""),
-				 (input_status & V4L2_IN_ST_NO_POWER) ? "no 5V power" : "");
-		} else {
-			dev_warn(&dev->intf->dev,
-				 "ADV7604 g_input_status query failed: %d\n", ret);
-		}
+	ret = v4l2_subdev_call(dev->sd_adv7604, video, g_input_status,
+			       &input_status);
+	if (ret == 0) {
+		dev_info(&dev->intf->dev,
+			 "ADV7604 input status: 0x%08x (%s%s)\n",
+			 input_status,
+			 (input_status == 0) ? "locked / signal OK" :
+			 ((input_status & V4L2_IN_ST_NO_SIGNAL) ? "no signal " : ""),
+			 (input_status & V4L2_IN_ST_NO_POWER) ? "no 5V power" : "");
 	} else {
-		/*
-		 * Legacy mode (subdev_mode=0):
-		 * Fail-closed if any subdevice pointer is unexpectedly present.
-		 */
-		if (dev->sd_adv7604 || dev->sd_adv7511) {
-			dev_err(&dev->intf->dev,
-				"Cannot stream in legacy mode: subdevices unexpectedly registered\n");
-			gc550_return_all_buffers(dev, VB2_BUF_STATE_QUEUED);
-			return -EIO;
-		}
-
-		ret = gc550_bootstrap_hw(dev);
-		if (ret < 0) {
-			gc550_return_all_buffers(dev, VB2_BUF_STATE_QUEUED);
-			return ret;
-		}
-		gc550_log_signal_status(dev);
+		dev_warn(&dev->intf->dev,
+			 "ADV7604 g_input_status query failed: %d\n", ret);
 	}
 
 	mutex_lock(&dev->stream_mutex);
@@ -1152,10 +913,6 @@ static int gc550_start_streaming(struct vb2_queue *vq, unsigned int count)
 		gc550_return_all_buffers(dev, VB2_BUF_STATE_QUEUED);
 		return ret;
 	}
-
-#ifdef CONFIG_GC550_DIAG
-	gc550_diag_emit_lifecycle(dev, GC550_EVT_STREAM_START_COMPLETE);
-#endif
 
 	return 0;
 }
@@ -1291,7 +1048,7 @@ static int gc550_vidioc_enum_input(struct file *file, void *priv,
 
 	strscpy(inp->name, "HDMI", sizeof(inp->name));
 	inp->type = V4L2_INPUT_TYPE_CAMERA;
-	if (dev->subdev_mode && dev->sd_adv7604)
+	if (dev->sd_adv7604)
 		inp->capabilities = V4L2_IN_CAP_DV_TIMINGS;
 	return 0;
 }
@@ -1312,7 +1069,7 @@ static int gc550_vidioc_g_dv_timings(struct file *file, void *priv,
 {
 	struct gc550_dev *dev = video_drvdata(file);
 
-	if (!dev->subdev_mode || !dev->sd_adv7604)
+	if (!dev->sd_adv7604)
 		return -ENODATA;
 
 	return v4l2_subdev_call(dev->sd_adv7604, pad, g_dv_timings,
@@ -1327,7 +1084,7 @@ static int gc550_vidioc_s_dv_timings(struct file *file, void *priv,
 	const struct v4l2_frmsize_discrete *size;
 	int ret;
 
-	if (!dev->subdev_mode || !dev->sd_adv7604)
+	if (!dev->sd_adv7604)
 		return -ENODATA;
 
 	if (vb2_is_busy(&dev->vb_queue))
@@ -1366,7 +1123,7 @@ static int gc550_vidioc_query_dv_timings(struct file *file, void *priv,
 {
 	struct gc550_dev *dev = video_drvdata(file);
 
-	if (!dev->subdev_mode || !dev->sd_adv7604)
+	if (!dev->sd_adv7604)
 		return -ENODATA;
 
 	return v4l2_subdev_call(dev->sd_adv7604, pad, query_dv_timings,
@@ -1378,7 +1135,10 @@ static int gc550_vidioc_enum_dv_timings(struct file *file, void *priv,
 {
 	struct gc550_dev *dev = video_drvdata(file);
 
-	if (!dev->subdev_mode || !dev->sd_adv7604)
+	if (timings->pad != 0)
+		return -EINVAL;
+
+	if (!dev->sd_adv7604)
 		return -ENODATA;
 
 	timings->pad = ADV76XX_PAD_HDMI_PORT_A;
@@ -1390,7 +1150,10 @@ static int gc550_vidioc_dv_timings_cap(struct file *file, void *priv,
 {
 	struct gc550_dev *dev = video_drvdata(file);
 
-	if (!dev->subdev_mode || !dev->sd_adv7604)
+	if (cap->pad != 0)
+		return -EINVAL;
+
+	if (!dev->sd_adv7604)
 		return -ENODATA;
 
 	cap->pad = ADV76XX_PAD_HDMI_PORT_A;
@@ -1420,6 +1183,12 @@ static int gc550_vidioc_log_status(struct file *file, void *priv)
 {
 	struct gc550_dev *dev = video_drvdata(file);
 
+	dev_info(&dev->intf->dev,
+		 "Stream: active=%d, fmt=%ux%u, frames=%llu, audio_bytes=%llu, desyncs=%u, swap=%d\n",
+		 READ_ONCE(dev->streaming), dev->pix_fmt.width,
+		 dev->pix_fmt.height, dev->parser.frame_sequence,
+		 dev->parser.audio_bytes, dev->parser.desync_count,
+		 dev->parser.swap_mode);
 	v4l2_device_call_all(&dev->v4l2_dev, 0, core, log_status);
 	return 0;
 }
@@ -1481,22 +1250,8 @@ static int gc550_subdevs_register(struct gc550_dev *dev)
 {
 	int ret;
 
-	if (subdev_mode == 0) {
-		dev->subdev_mode = false;
-		return 0;
-	}
-
-	if (subdev_mode != 1) {
-		dev_err(&dev->intf->dev,
-			"Invalid subdev_mode=%d (expected 0 or 1)\n",
-			subdev_mode);
-		return -EINVAL;
-	}
-
 	if (!dev->i2c_registered || !dev->v4l2_registered)
 		return -EINVAL;
-
-	dev->subdev_mode = true;
 
 	/*
 	 * Run the hardware bootstrap before creating either I2C subdevice
@@ -1516,10 +1271,12 @@ static int gc550_subdevs_register(struct gc550_dev *dev)
 	 * Upstream probe callbacks modify physical device state:
 	 * adv76xx_probe() reinitializes the pixel-bus format via
 	 * adv76xx_core_init() (IO[0x03] = 0x00, 8-bit SDR 4:2:2) and
-	 * adv7511_probe() powers down the HDMI transmitter (Main[0x41] |= 0x40).
+	 * adv7511_probe() powers down the HDMI transmitter (Main[0x41] |= 0x40
+	 * and Main[0xA1] |= 0x3C when no downstream HPD is present).
 	 * dev->is_bootstrapped remains true to record that hardware bootstrap
 	 * completed and prevent any subsequent replay of gc550_init_blob.
-	 * The ADV7604 pixel-bus format is reconfigured immediately after probe.
+	 * Post-probe, reconfigure the ADV7604 pixel-bus format and restore
+	 * the ADV7511 transmitter power state via s_power(1).
 	 */
 
 	dev->sd_adv7604 = v4l2_i2c_new_subdev_board(&dev->v4l2_dev,
@@ -1558,6 +1315,21 @@ static int gc550_subdevs_register(struct gc550_dev *dev)
 		gc550_subdevs_unregister(dev);
 		return ret;
 	}
+
+	/*
+	 * Restore ADV7511 transmitter power state after adv7511_probe()
+	 * (which powers down Main[0x41] |= 0x40 when no downstream HDMI sink
+	 * asserts HPD). Note that upstream adv7511_s_power() returns bool
+	 * (1 on success, 0 on power-up timeout) despite the int (*s_power)()
+	 * v4l2_subdev_core_ops signature, so only negative error codes or 0
+	 * indicate failure or absent HPD; log a warning if power-up does not
+	 * complete without aborting capture registration.
+	 */
+	ret = v4l2_subdev_call(dev->sd_adv7511, core, s_power, 1);
+	if (ret < 0 && ret != -ENOIOCTLCMD)
+		dev_warn(&dev->intf->dev,
+			 "Failed to restore adv7511 post-probe power state: %d\n",
+			 ret);
 
 	return 0;
 }
@@ -1651,7 +1423,7 @@ int gc550_video_register(struct gc550_dev *dev)
 	}
 
 	/* Establish Immutable Pad Link from ADV7604 Source Pad 6 to Video Node Sink Pad 0 */
-	if (dev->subdev_mode && dev->sd_adv7604) {
+	if (dev->sd_adv7604) {
 		ret = media_create_pad_link(&dev->sd_adv7604->entity,
 					    ADV7604_PAD_SOURCE,
 					    &vdev->entity,
@@ -1660,6 +1432,22 @@ int gc550_video_register(struct gc550_dev *dev)
 		if (ret < 0) {
 			dev_err(&dev->intf->dev,
 				"Failed to create media link from ADV7604 to video node: %d\n",
+				ret);
+			gc550_video_unregister(dev);
+			return ret;
+		}
+	}
+
+	/* Establish Immutable Pad Link from ADV7604 Source Pad 6 to ADV7511 Sink Pad 0 */
+	if (dev->sd_adv7604 && dev->sd_adv7511) {
+		ret = media_create_pad_link(&dev->sd_adv7604->entity,
+					    ADV7604_PAD_SOURCE,
+					    &dev->sd_adv7511->entity,
+					    0,
+					    MEDIA_LNK_FL_ENABLED | MEDIA_LNK_FL_IMMUTABLE);
+		if (ret < 0) {
+			dev_err(&dev->intf->dev,
+				"Failed to create media link from ADV7604 to ADV7511: %d\n",
 				ret);
 			gc550_video_unregister(dev);
 			return ret;

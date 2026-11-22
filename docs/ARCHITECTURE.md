@@ -26,7 +26,7 @@ Rather than relying on a userspace daemon (`libusb`), virtual v4l2loopback nodes
        |  |                gc550.ko Driver Core                 |  |
        |  |  - Stream Parser (SAV/EAV/Audio Demux)              |  |
        |  |  - 16 KiB FX3 DMA Swap Reorderer                    |  |
-       |  |  - Media Controller Graph & DV Timings (`subdev=1`) |  |
+       |  |  - Unified Media Controller Graph & DV Timings       |  |
        |  |  - FX3 USB-to-I2C Bridge & Safe Bootstrap           |  |
        |  +--------------------------+--------------------------+  |
        |                             |                             |
@@ -78,41 +78,45 @@ The GC550 multiplexes embedded HDMI LPCM audio directly into the primary USB 3.0
 
 ---
 
-## 4. Media Controller & V4L2 Subdevice Architecture (`subdev_mode=1`)
+## 4. Unified Media Controller & V4L2 Subdevice Architecture
 
-When loaded with `subdev_mode=1`, `gc550.ko` registers a `/dev/mediaX` device and binds the GC550 video node with upstream in-tree subdevice drivers:
+`gc550.ko` uses a single, unconditional V4L2 subdevice and Media Controller architecture (the legacy `subdev_mode` parameter and standalone mode were removed in U2-B02-S1). On USB probe, the driver registers a `/dev/mediaX` device and binds the GC550 video capture node with upstream in-tree I2C subdevice drivers (`adv7604` and `adv7511-v4l2`):
 
-```
+```text
  +------------------------------------------------------------------------+
  |                       Media Controller Topology                        |
  |                                                                        |
- |   +-----------------+            Pad 6 (Source)                        |
- |   |     adv7604     |  [video] =================> +-----------------+  |
- |   | (HDMI Receiver) |                             | AVerMedia GC550 |  |
- |   +--------+--------+                             |  (/dev/video0)  |  |
- |            |                                      +-----------------+  |
- |            | Link (adv7604:6 -> gc550:0)                               |
- |            | [ENABLED, IMMUTABLE]                                      |
- |            v                                                           |
- |   +-----------------+                                                  |
- |   |     adv7511     |                                                  |
- |   | (HDMI TX Passth)|                                                  |
- |   +-----------------+                                                  |
+ |   +---------------------+  Pad 6 (SOURCE)  [ENABLED,IMMUTABLE]         |
+ |   |   adv7604 13-0020   +========================> +-----------------+ |
+ |   |   (HDMI Receiver)   |                          | AVerMedia GC550 | |
+ |   |   pad0..pad5: SINK  |                          |  (/dev/videoX)  | |
+ |   |   pad6: SOURCE      +----+                     |   pad0: SINK    | |
+ |   +---------------------+    |                     +-----------------+ |
+ |                              | [ENABLED,IMMUTABLE]                     |
+ |                              | ("adv7604":6 -> "adv7511-v4l2":0)       |
+ |                              v                                         |
+ |                    +-----------------------+                           |
+ |                    | adv7511-v4l2 13-003d  |                           |
+ |                    | (HDMI TX Passthrough) |                           |
+ |                    |      pad0: SINK       |                           |
+ |                    +-----------------------+                           |
  +------------------------------------------------------------------------+
 ```
 
-### 4.1 Subdevice Integration Features
-- **V4L2 DV Timings Suite:** Implements `VIDIOC_G_DV_TIMINGS`, `VIDIOC_S_DV_TIMINGS`, `VIDIOC_QUERY_DV_TIMINGS`, `VIDIOC_ENUM_DV_TIMINGS`, and `VIDIOC_DV_TIMINGS_CAP`.
-- **Pad Format Propagation:** When timings are negotiated or queried via `v4l2-ctl`, `gc550.ko` invokes `v4l2_subdev_call(adv7604, pad, set_fmt)` to synchronize ADV7604 Pad 6 format with the active capture pipeline.
+### 4.1 Subdevice Integration & Compliance Features (U2-B02-S1/S2)
+- **Complete Fan-Out Topology (Hardware Verified, Gate 2 Phase C):** `adv7604` Pad 6 (`SOURCE`) fans out via two `[ENABLED,IMMUTABLE]` links to `"AVerMedia GC550":0` (capture path) and `"adv7511-v4l2":0` (HDMI passthrough transmitter), leaving zero orphan entities.
+- **ADV7511 Post-Probe Power Restoration (Hardware Verified, Gate 2 Phase B/D):** Because `adv7511_probe()` powers down the transmitter (`Main[0x41] = 0x50`), `gc550_subdev_init()` invokes `v4l2_subdev_call(dev->sd_adv7511, core, s_power, 1)` after subdevice registration to restore `power on` (`Main[0x41] = 0x10`).
+- **V4L2 DV Timings Suite & Pad Validation (Hardware Verified, Gate 2 Phase D):** Implements `VIDIOC_G_DV_TIMINGS`, `VIDIOC_S_DV_TIMINGS`, `VIDIOC_QUERY_DV_TIMINGS`, `VIDIOC_ENUM_DV_TIMINGS`, and `VIDIOC_DV_TIMINGS_CAP`. Both `gc550_enum_dv_timings()` and `gc550_dv_timings_cap()` validate `pad == 0` and reject non-zero pads with `-EINVAL`. *(Known open finding `REM-B02-002`: `VIDIOC_ENUM_DV_TIMINGS` delegates unfiltered to `adv7604` [73 timings], while `VIDIOC_S_DV_TIMINGS` filters against the 5-entry `gc550_frame_sizes[]` table [15 accepted, 58 rejected with `-EINVAL`].)*
+- **Pad Format Propagation:** When timings are negotiated or applied via `VIDIOC_S_DV_TIMINGS`, `gc550.ko` invokes `v4l2_subdev_call(adv7604, pad, set_fmt)` to synchronize ADV7604 Pad 6 format (`code=0x2011`) with the active capture pipeline.
 - **Safe Bootstrap Isolation:** The bootstrap sequence preserves known-good SDR bus ordering (`ADV7604_BUS_ORDER_BGR`) and ensures DV timing operations leave internal routing untouched.
 
 ---
 
 ## 5. Hardware Bootstrap & Safe Command Bridge (`gc550-cmd.c`)
 
-The GC550 hardware requires an initial wake-up sequence over the Cypress FX3 USB-to-I2C command bridge (`EP 0x01 OUT` / `EP 0x81 IN`):
+The GC550 hardware requires an initial wake-up sequence over the Cypress FX3 USB-to-I2C command bridge (`EP 0x01 OUT` / `EP 0x81 IN`) executed during probe prior to subdevice registration:
 - **Command Protocol:** Packets are framed with 8-byte command headers (`0xAA 0x08 ...`) specifying I2C bus targets, write lengths, and register addresses.
-- **Chip Initialization Table:** A 6,576-step sequence in `kernel/gc550-regtables.h` initializes the ADV7604 HDMI receiver (including loading the 1080p60 EDID binary into internal RAM), ADV7511 HDMI transmitter, TLV320AIC3x audio codec, and Lattice FPGA.
+- **Modular 27-Stage Initialization Sequence (`U2-B01-S1/S2/S3`):** A 27-stage, 2,615-step sequence in `kernel/gc550-regtables.h` (combining symbolic Class 1 board register operations and a compacted 20,082-byte `gc550_init_blob[]` — reduced from the original 6,576-step / 53,146-byte sequence and the intermediate Phase 2C6D/E 21,458-byte blob) initializes the ADV7604 HDMI receiver (including loading the 1080p60 EDID binary into internal RAM), ADV7511 HDMI transmitter, TLV320AIC3x audio codec, PCA9539A GPIO expander, and Lattice FPGA in `~1.15 s`.
 - **AT88SC CryptoMemory Protection:** AVerMedia hardware utilizes an Atmel AT88SC authentication chip. `gc550.ko` strips proprietary authentication handshake replays from the initialization sequence and enforces a hard error (`-EPERM`) in `gc550_cmd_send()` blocking bridge opcodes `0x05..0x07` and `0x09`. This permanently protects the device's physical attempt counters (`0xFF`) from exhaustion or bricking.
 
 ---
@@ -122,8 +126,8 @@ The GC550 hardware requires an initial wake-up sequence over the Cypress FX3 USB
 ### 6.1 Cross-URB Marker Straddle Tracking
 USB 3.0 transfers arrive in 512 KiB URBs. Because HDMI video scanout and audio packets do not align to 512 KiB powers of two, 4-byte marker headers (`00 FF FF C0`, `00 FF FF C1`, `00 FF FF 58`) often span across two adjacent URBs. The parser maintains a 4-stage state machine (`marker_stage`, `saved_marker`) that preserves partial marker bytes across URB boundaries, guaranteeing zero frame corruption at transfer borders.
 
-### 6.2 16 KiB FX3 DMA Swap Engine
-During warm restarts or quick stream cycling, the FX3 internal ping-pong DMA socket buffer phase can invert, swapping adjacent 16 KiB blocks. The driver includes an automatic swap detector that:
-- Evaluates video line boundaries and frame candidate spans.
+### 6.2 16 KiB FX3 DMA Swap Engine & Native Diagnostics
+During warm restarts or quick stream cycling, the FX3 internal ping-pong DMA socket buffer phase can invert, swapping adjacent 16 KiB blocks. The driver includes an automatic swap detector and minimal native kernel diagnostics:
+- Evaluates video line boundaries and frame candidate spans directly from Bulk IN `0x83` URB callbacks (`urb->context` is wired directly to `struct gc550_dev *` with no custom diagnostic wrappers or ring buffers).
 - Dynamically pairs and unswaps 16 KiB blocks in memory when swapped phase is detected.
-- Reports active swap status through sysfs diagnostic interfaces (`swap_mode`, `desync_count`).
+- Reports DMA swap mode switches via `dev_info_ratelimited()`, parser anomalies (unclosed-frame aborts, swap votes, invalid spans, SAV/EAV checksum or sequence mismatches) via zero-overhead `dev_dbg_ratelimited()` (`dynamic_debug`), and stream/parser counters via `VIDIOC_LOG_STATUS` (`v4l2-ctl --log-status`) and stream-stop kernel logs.

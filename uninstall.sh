@@ -21,7 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "${SCRIPT_DIR}/kernel/gc550.h" ]]; then
 	PKG_VER="$(grep -E '#define[[:space:]]+GC550_DRIVER_VERSION' "${SCRIPT_DIR}/kernel/gc550.h" | awk -F'"' '{print $2}')"
 else
-	PKG_VER="0.5.0"
+	PKG_VER="0.6.0"
 fi
 
 # Validate derived version format

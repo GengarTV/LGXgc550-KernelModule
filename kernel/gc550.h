@@ -38,10 +38,9 @@
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <linux/i2c.h>
-#include "gc550-diag.h"
 
 #define GC550_DRIVER_NAME	"gc550"
-#define GC550_DRIVER_VERSION	"0.5.0"
+#define GC550_DRIVER_VERSION	"0.6.0"
 
 /* USB Vendor & Product IDs */
 #define USB_VID_AVERMEDIA	0x07ca
@@ -80,6 +79,67 @@
 #define GC550_I2C_ADV7511_TX	0x3d /* ADV7511 HDMI TX (Passthrough) */
 #define GC550_I2C_ADV7604_INFO	0x46 /* ADV7604 InfoFrame Map (GC550 uses 0x46) */
 #define GC550_I2C_PCA9539A	0x74 /* PCA9539A 16-bit GPIO expander */
+
+/*
+ * NXP PCA9539A 16-bit I2C GPIO Expander Registers (I2C 0x74)
+ *
+ * Register addresses 0x00..0x07 are verified from the NXP PCA9539A datasheet
+ * (Table 4, "Command byte") and Linux drivers/gpio/gpio-pca953x.c.
+ * Board-level pin wiring on Port 0 and Port 1 lacks an official AVerMedia
+ * schematic; per U2-B01-S1 rules, individual GPIO pin bit meanings are not
+ * assigned speculative symbolic names.
+ */
+#define GC550_PCA9539A_REG_INPUT0	0x00 /* Input port 0 (read-only) */
+#define GC550_PCA9539A_REG_INPUT1	0x01 /* Input port 1 (read-only) */
+#define GC550_PCA9539A_REG_OUTPUT0	0x02 /* Output port 0 */
+#define GC550_PCA9539A_REG_OUTPUT1	0x03 /* Output port 1 */
+#define GC550_PCA9539A_REG_INVERT0	0x04 /* Polarity inversion port 0 */
+#define GC550_PCA9539A_REG_INVERT1	0x05 /* Polarity inversion port 1 */
+#define GC550_PCA9539A_REG_CONFIG0	0x06 /* Configuration port 0 (0=out, 1=in) */
+#define GC550_PCA9539A_REG_CONFIG1	0x07 /* Configuration port 1 (0=out, 1=in) */
+
+/*
+ * TI TLV320AIC3x Stereo Audio Codec Page 0 Registers (I2C 0x18)
+ *
+ * Verified against the TI TLV320AIC3104/AIC3x datasheet and upstream Linux
+ * sound/soc/codecs/tlv320aic3x.h.
+ */
+#define GC550_AIC3X_PLL_PROGA_REG		0x03 /* PLL Programming Register A */
+#define GC550_AIC3X_PLL_PROGB_REG		0x04 /* PLL Programming Register B */
+#define GC550_AIC3X_PLL_PROGC_REG		0x05 /* PLL Programming Register C */
+#define GC550_AIC3X_PLL_PROGD_REG		0x06 /* PLL Programming Register D */
+#define GC550_AIC3X_ASD_INTF_CTRLA		0x08 /* Audio Serial Data Interface Ctrl A */
+#define GC550_AIC3X_ASD_INTF_CTRLB		0x09 /* Audio Serial Data Interface Ctrl B */
+#define GC550_AIC3X_OVRF_STATUS_AND_PLLR_REG	0x0b /* Overflow Status and PLL R Value */
+#define GC550_AIC3X_CODEC_DFILT_CTRL		0x0c /* Audio Codec Digital Filter Ctrl */
+#define GC550_AIC3X_LADC_VOL			0x0f /* Left ADC PGA Gain Control */
+#define GC550_AIC3X_RADC_VOL			0x10 /* Right ADC PGA Gain Control */
+#define GC550_AIC3X_LINE1L_2_LADC_CTRL		0x13 /* LINE1L to Left ADC Control */
+#define GC550_AIC3X_LINE1R_2_LADC_CTRL		0x15 /* LINE1R to Left ADC Control */
+#define GC550_AIC3X_LINE1R_2_RADC_CTRL		0x16 /* LINE1R to Right ADC Control */
+#define GC550_AIC3X_LINE1L_2_RADC_CTRL		0x18 /* LINE1L to Right ADC Control */
+
+/*
+ * Lattice ECP3 FPGA Custom I2C Slave Registers (I2C 0x10)
+ *
+ * The Lattice ECP3 (LFE3-17EA) executes a proprietary AVerMedia bitstream
+ * with no public register map datasheet. Register 0x00 is verified by
+ * repository RTTI/trace evidence (PROTOCOL.md: "FPGA version = 0x%02X").
+ * Registers 0x01..0x89 have unverified internal bitstream semantics and are
+ * named by register offset only.
+ */
+#define GC550_FPGA_REG_VERSION	0x00 /* FPGA bitstream version readback */
+#define GC550_FPGA_REG_01	0x01 /* Unverified FPGA bitstream register 0x01 */
+#define GC550_FPGA_REG_02	0x02 /* Unverified FPGA bitstream register 0x02 */
+#define GC550_FPGA_REG_05	0x05 /* Unverified FPGA bitstream register 0x05 */
+#define GC550_FPGA_REG_06	0x06 /* Unverified FPGA bitstream register 0x06 */
+#define GC550_FPGA_REG_07	0x07 /* Unverified FPGA bitstream register 0x07 */
+#define GC550_FPGA_REG_22	0x22 /* Unverified FPGA bitstream register 0x22 */
+#define GC550_FPGA_REG_80	0x80 /* Unverified FPGA bitstream register 0x80 */
+#define GC550_FPGA_REG_81	0x81 /* Unverified FPGA bitstream register 0x81 */
+#define GC550_FPGA_REG_86	0x86 /* Unverified FPGA bitstream register 0x86 */
+#define GC550_FPGA_REG_87	0x87 /* Unverified FPGA bitstream register 0x87 */
+#define GC550_FPGA_REG_89	0x89 /* Unverified FPGA bitstream register 0x89 */
 
 /* Video Frame / Stream Constants (1920x1080 YUYV) */
 #define GC550_DEFAULT_WIDTH	1920
@@ -178,7 +238,6 @@ struct gc550_dev {
 	bool streaming;
 	bool disconnected;
 	bool is_bootstrapped;
-	bool subdev_mode;
 	bool v4l2_registered;
 	bool v4l2_ref_held;
 
@@ -197,16 +256,6 @@ struct gc550_dev {
 	bool alsa_disconnected;
 	size_t alsa_hw_ptr;
 	size_t alsa_period_pos;
-
-#ifdef CONFIG_GC550_DIAG
-	/* Passive Diagnostic Subsystem (E1.9 Stage 2A) */
-	struct gc550_diag_ring diag_ring;
-	struct gc550_diag_concurrency diag_concurrency;
-	struct gc550_urb_ctx urb_ctx[GC550_NUM_URBS];
-	atomic64_t diag_submission_counter;
-	u32        diag_session_epoch;
-	struct dentry *debugfs_dir;
-#endif
 };
 
 /* Function Prototypes - gc550-cmd.c */
@@ -220,19 +269,13 @@ int gc550_i2c_read(struct gc550_dev *dev, u8 slave_addr, u8 reg,
 int gc550_i2c_read_byte(struct gc550_dev *dev, u8 slave_addr, u8 reg, u8 *val);
 int gc550_detect_board_state(struct gc550_dev *dev, bool *already_configured);
 int gc550_bootstrap_hw(struct gc550_dev *dev);
-void gc550_log_signal_status(struct gc550_dev *dev);
 
 /* Function Prototypes - gc550-video.c */
 int gc550_video_register(struct gc550_dev *dev);
 void gc550_video_unregister(struct gc550_dev *dev);
 void gc550_video_stop_device(struct gc550_dev *dev);
 void gc550_parser_reset(struct gc550_stream_parser *parser);
-#ifdef CONFIG_GC550_DIAG
-void gc550_parse_stream_chunk(struct gc550_dev *dev, const u8 *data, size_t len,
-			      const struct gc550_dispatch_ctx *dctx);
-#else
 void gc550_parse_stream_chunk(struct gc550_dev *dev, const u8 *data, size_t len);
-#endif
 
 /* Function Prototypes - gc550-audio.c */
 int gc550_audio_register(struct gc550_dev *dev);

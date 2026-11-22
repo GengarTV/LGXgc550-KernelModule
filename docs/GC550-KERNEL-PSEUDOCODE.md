@@ -4,8 +4,7 @@
 > AVerMedia Live Gamer Extreme (GC550) Linux kernel module (`gc550.ko`).
 >
 > **Source basis:** The current `main` branch implementation in `kernel/gc550-core.c`,
-> `gc550-video.c`, `gc550-audio.c`, `gc550-cmd.c`, `gc550-i2c.c`,
-> `gc550-diag.c`, and `gc550.h`.
+> `gc550-video.c`, `gc550-audio.c`, `gc550-cmd.c`, `gc550-i2c.c`, and `gc550.h`.
 >
 > **Important:** This is explanatory pseudocode, not compilable C and not a replacement
 > for the Linux kernel API contracts. It describes the implementation's main control
@@ -47,8 +46,8 @@ The driver exposes native Linux interfaces:
 - **V4L2** for video capture.
 - **ALSA PCM** for HDMI audio capture.
 - **Linux I2C adapter** for devices behind the FX3 USB-to-I2C bridge.
-- **Optional Media Controller graph and I2C subdevices** when `subdev_mode=1`.
-- **Optional diagnostic telemetry** when diagnostic support is compiled in.
+- **Media Controller graph and I2C subdevices (`adv7604` + `adv7511-v4l2`)**, registered unconditionally on probe.
+- **Native kernel diagnostics** via `dev_dbg_ratelimited()` (`dynamic_debug`) and `VIDIOC_LOG_STATUS`.
 
 ---
 
@@ -94,10 +93,6 @@ PROCEDURE USB_PROBE(interface, device_id)
         stream spinlock
     Associate driver state with USB interface
 
-    IF diagnostic subsystem initialization fails THEN
-        GOTO RELEASE_DEVICE
-    END IF
-
     IF command buffers initialization fails THEN
         GOTO RELEASE_DEVICE
     END IF
@@ -113,8 +108,6 @@ PROCEDURE USB_PROBE(interface, device_id)
     IF ALSA audio device registration fails THEN
         GOTO UNREGISTER_VIDEO
     END IF
-
-    Initialize diagnostic debugfs interface
 
     Log registered video and audio devices
     RETURN success
@@ -165,7 +158,6 @@ PROCEDURE USB_DISCONNECT(interface)
     Release V4L2 mutex
 
     Remove I2C adapter
-    Remove diagnostic debugfs interface
     Free command buffers
 
     Drop driver's device reference
@@ -302,14 +294,10 @@ PROCEDURE DETECT_BOARD_STATE(dev)
         RETURN "Bootstrap required"
     END IF
 
-    IF legacy mode is active THEN
-        RETURN "Already configured"
-    END IF
+    Read additional ADV7604 format and sub-map registers (IO[0x03], IO[0xF6], IO[0xF7])
+    Read ADV7511 transmitter power register (Main[0x41])
 
-    Read additional ADV7604 format and sub-map registers
-    Read ADV7511 transmitter power register
-
-    IF all expected subdevice-mode values match THEN
+    IF all expected post-bootstrap values match THEN
         RETURN "Already configured"
     END IF
 
@@ -317,49 +305,48 @@ PROCEDURE DETECT_BOARD_STATE(dev)
 END PROCEDURE
 ```
 
-### 3.5 Execute the hardware initialization table
+### 3.5 Execute the staged hardware initialization sequence
 
-The initialization table is a sequence of variable-length command records.
-Each record contains a transmit length, expected receive length, and transmit data.
+The initialization sequence is organized as 27 ordered stages combining symbolic
+board register operations and slices of the compacted binary command blob
+(`2,615` total operations). Each blob record contains a transmit length, expected
+receive length, and transmit data.
 
 ```text
 PROCEDURE RUN_INITIALIZATION_SEQUENCE(dev)
-    offset = 0
-    step = 0
-
     Acquire command mutex
 
-    WHILE another complete record exists in initialization table
+    FOR each stage in the 27-stage initialization schedule
         IF device is disconnected THEN
             result = device-not-present error
             BREAK
         END IF
 
-        Read transmit length from record
-        Read expected receive length from record
-        Locate transmit bytes
+        IF stage is a symbolic board-register stage THEN
+            Execute symbolic I2C/bridge operations for this stage
+        ELSE (compacted init-blob slice stage)
+            FOR each record in stage blob slice
+                Read transmit length, expected receive length, and payload
+                IF record extends beyond slice boundary THEN
+                    result = invalid-table error
+                    BREAK
+                END IF
 
-        IF record extends beyond table boundary THEN
-            result = invalid-table error
+                Apply unconditional subdevice-aware command translation
+
+                IF expected receive length > 0 THEN
+                    Send command and validate response length
+                ELSE
+                    Send command without waiting for a data response
+                END IF
+            END FOR
+        END IF
+
+        IF any operation failed THEN
+            Log failed stage/step
             BREAK
         END IF
-
-        Translate command if subdevice mode requires it
-
-        IF expected receive length > 0 THEN
-            Send command and validate response length
-        ELSE
-            Send command without waiting for a data response
-        END IF
-
-        IF command failed THEN
-            Log failed step and table offset
-            BREAK
-        END IF
-
-        Advance offset to next record
-        Increment step
-    END WHILE
+    END FOR
 
     Drain stale command responses
     Release command mutex
@@ -409,7 +396,7 @@ END PROCEDURE
 ```
 
 Bootstrap is deliberately not repeated after the device has been marked initialized.
-In subdevice mode, the bootstrap is performed before registering the ADV7604 and
+Bootstrap is performed unconditionally during probe before registering the ADV7604 and
 ADV7511 I2C clients.
 
 ---
@@ -466,9 +453,9 @@ algorithm and transfer quirks. Removal unregisters it from the I2C core.
 
 ---
 
-## 5. V4L2 video device and optional subdevices
+## 5. V4L2 video device and unified subdevices
 
-### 5.1 Register video capture
+### 5.1 Register video capture and Media Controller graph
 
 ```text
 PROCEDURE REGISTER_VIDEO_DEVICE(dev)
@@ -487,7 +474,7 @@ PROCEDURE REGISTER_VIDEO_DEVICE(dev)
     Register V4L2 device
     Acquire reference to driver state
 
-    Register optional ADV7604 / ADV7511 subdevices
+    Register ADV7604 and ADV7511 subdevices unconditionally
 
     Initialize videobuf2 queue:
         capture queue
@@ -505,10 +492,9 @@ PROCEDURE REGISTER_VIDEO_DEVICE(dev)
 
     Register /dev/video device
 
-    IF subdevice mode is active AND ADV7604 exists THEN
-        Create immutable enabled link:
-            ADV7604 source pad -> GC550 video sink pad
-    END IF
+    Create immutable enabled Media Controller fan-out links:
+        ADV7604 source pad 6 -> GC550 video sink pad 0
+        ADV7604 source pad 6 -> ADV7511 sink pad 0
 
     Register /dev/media device
     RETURN success
@@ -519,22 +505,11 @@ ON ANY FAILURE:
 END PROCEDURE
 ```
 
-### 5.2 Optional subdevice registration
+### 5.2 Unconditional subdevice registration
 
 ```text
 PROCEDURE REGISTER_SUBDEVICES(dev)
-    IF subdev_mode == 0 THEN
-        Set legacy mode
-        RETURN success
-    END IF
-
-    IF subdev_mode is not 1 THEN
-        RETURN invalid-configuration error
-    END IF
-
     Require registered I2C adapter and V4L2 device
-
-    Enable subdevice mode
 
     BOOTSTRAP_HARDWARE(dev)
 
@@ -542,18 +517,19 @@ PROCEDURE REGISTER_SUBDEVICES(dev)
         RETURN error
     END IF
 
-    Register ADV7604 receiver subdevice on its configured I2C address
+    Register ADV7604 receiver subdevice on its configured I2C address (0x20)
     IF registration fails THEN
         RETURN error
     END IF
 
-    Register ADV7511 transmitter subdevice on its configured I2C address
+    Register ADV7511 transmitter subdevice on its configured I2C address (0x3d)
     IF registration fails THEN
         Unregister ADV7604
         RETURN error
     END IF
 
-    Configure ADV7604 source-pad format to match current V4L2 pixel format
+    Invoke ADV7511 core s_power(1) to restore power-on state (Main[0x41] = 0x10)
+    Configure ADV7604 source-pad format to match current timings/pixel format
 
     IF configuration fails THEN
         Unregister both subdevices
@@ -579,11 +555,22 @@ END PROCEDURE
 ```
 
 ```text
+PROCEDURE ENUM_OR_CAP_DV_TIMINGS(request)
+    Require ADV7604 subdevice
+    IF request.pad != 0 THEN
+        RETURN -EINVAL
+    END IF
+
+    Forward pad-zeroed query to ADV7604 subdevice
+END PROCEDURE
+```
+
+```text
 PROCEDURE SET_DIGITAL_VIDEO_TIMINGS(requested_timings)
-    Require subdevice mode and ADV7604 subdevice
+    Require ADV7604 subdevice
     Require video queue to be idle
     Require BT.656 / BT.1120 timing type
-    Require requested dimensions to be supported
+    Require requested dimensions to be supported in gc550_frame_sizes[]
 
     Read current ADV7604 timings
 
@@ -620,17 +607,11 @@ PROCEDURE START_VIDEO_STREAM(dev, queued_buffer_count)
         RETURN device-not-present error
     END IF
 
-    IF subdevice mode is active THEN
-        Require completed bootstrap
-        Require ADV7604 and ADV7511 subdevices
+    Require completed bootstrap
+    Require ADV7604 and ADV7511 subdevices
 
-        Configure ADV7604 format
-        Query ADV7604 input signal status when available
-    ELSE
-        Require that no subdevice pointers are unexpectedly registered
-        BOOTSTRAP_HARDWARE(dev)
-        Log receiver signal status
-    END IF
+    Configure ADV7604 format
+    Query ADV7604 input signal status when available
 
     Acquire stream lifecycle mutex
 
@@ -678,36 +659,31 @@ It must not sleep; resubmission uses atomic allocation context.
 
 ```text
 PROCEDURE STREAM_URB_COMPLETION(urb)
-    dev = Get driver state from URB context
+    dev = urb->context
 
     IF no device state exists THEN
         RETURN
     END IF
 
-    Record optional diagnostic callback-entry information
-
     Acquire stream lock
     IF stream is inactive OR device is disconnected THEN
         Release stream lock
-        GOTO CALLBACK_EXIT
+        RETURN
     END IF
     Release stream lock
 
-    Record optional URB completion telemetry
-
     IF USB status indicates successful completion THEN
         IF received length > 0 THEN
-            PARSE_STREAM_CHUNK(received bytes)
+            PARSE_STREAM_CHUNK(dev, received bytes)
         END IF
 
     ELSE IF status indicates cancellation or shutdown THEN
-        GOTO CALLBACK_EXIT
+        RETURN
 
     ELSE
-        Log USB transfer error
+        Log USB transfer error (dev_warn_ratelimited)
         Abort active video frame
         Reset stream parser
-        Record optional parser-reset diagnostic
     END IF
 
     Acquire stream lock
@@ -718,11 +694,7 @@ PROCEDURE STREAM_URB_COMPLETION(urb)
     END IF
     Release stream lock
 
-    Log resubmission failure where appropriate
-
-CALLBACK_EXIT:
-    Complete optional diagnostic accounting
-    RETURN
+    Log resubmission failure where appropriate (dev_err_ratelimited)
 END PROCEDURE
 ```
 
@@ -734,8 +706,6 @@ new URBs after shutdown begins.
 
 ```text
 PROCEDURE STOP_STREAM_RESOURCES(dev, buffer_result)
-    Record optional stream-stop event
-
     Acquire stream lifecycle mutex
     Acquire stream lock
         Mark streaming inactive
@@ -747,8 +717,6 @@ PROCEDURE STOP_STREAM_RESOURCES(dev, buffer_result)
     Release stream lifecycle mutex
 
     Return all queued/current video buffers with buffer_result
-
-    Record optional stream-stop-complete event
 END PROCEDURE
 ```
 
@@ -952,11 +920,10 @@ END PROCEDURE
 ### 7.6 Abort or replace an incomplete frame
 
 ```text
-PROCEDURE ABORT_VIDEO_FRAME(dev, reason)
+PROCEDURE ABORT_VIDEO_FRAME(dev)
     Detach active video buffer under queue lock
 
     IF buffer exists THEN
-        Record optional frame-error diagnostic
         Set timestamp and frame metadata
         Complete buffer with ERROR
     END IF
@@ -1119,53 +1086,14 @@ END PROCEDURE
 
 ---
 
-## 10. Diagnostic telemetry
+## 10. Native kernel diagnostics
 
-When diagnostic support is compiled in, the driver maintains a per-device
-diagnostic ring buffer and exposes read/control interfaces through debugfs.
+The driver uses standard Linux kernel logging and V4L2 status reporting rather than
+a custom diagnostic ring buffer or debugfs interface:
 
-```text
-PROCEDURE DIAGNOSTIC_INITIALIZE(dev)
-    Initialize ring-buffer lock
-    Set configured ring capacity
-    Clear head, overwrite count, and reset generation
-    Disable telemetry by default
-
-    Allocate diagnostic records
-
-    IF allocation fails THEN
-        RETURN out-of-memory error
-    END IF
-
-    Initialize callback concurrency counters
-    Initialize URB diagnostic contexts
-    RETURN success
-END PROCEDURE
-```
-
-```text
-PROCEDURE EMIT_DIAGNOSTIC_RECORD(dev, record)
-    IF telemetry is disabled THEN
-        RETURN
-    END IF
-
-    Acquire diagnostic ring lock
-    IF telemetry is still enabled AND storage exists THEN
-        Write record at current ring position
-        Advance ring head
-        Track overwritten slots when ring wraps
-    END IF
-    Release diagnostic ring lock
-END PROCEDURE
-```
-
-Recorded event categories include URB completion and submission failures,
-stream lifecycle events, SAV/EAV markers, audio headers, DMA swap votes/toggles,
-parser desynchronization, frame completion, and parser resets.
-
-Diagnostic storage is disabled by default and can be enabled/reset/read through
-the diagnostic interface. The diagnostic layer is intended to observe streaming,
-not to control the video parser's decisions.
+- **Parser anomalies (`dev_dbg_ratelimited()`, `dynamic_debug`):** Logs unclosed-frame aborts, FX3 DMA swap votes, rejected invalid frame spans, SAV/EAV checksum failures, and EAV sequence mismatches with zero runtime overhead when disabled.
+- **State transitions & errors (`dev_info*()` / `dev_warn_ratelimited()` / `dev_err*()`):** Logs FX3 DMA swap mode switches, USB URB transfer/submission errors, ADV7604 input lock on stream start, and aggregate stream counters (`frames`, `audio_bytes`, `desyncs`, `swap_mode`) on stream stop.
+- **V4L2 status inspection (`VIDIOC_LOG_STATUS`):** Logs GC550 stream/parser summary counters (`active`, `fmt`, `frames`, `audio_bytes`, `desyncs`, `swap`) followed by `v4l2_device_call_all(..., log_status)` for `adv7604` and `adv7511-v4l2`.
 
 ---
 
@@ -1178,7 +1106,6 @@ outlive the initial USB probe/disconnect callback.
 PROCEDURE RELEASE_DEVICE_STATE(dev)
     Called only when final device-state reference is dropped
 
-    Free diagnostic ring storage
     Release USB interface reference
     Release USB device reference
     Free device-state memory
@@ -1211,21 +1138,17 @@ MAIN DRIVER FLOW
     WHEN supported GC550 USB interface is connected:
         USB_PROBE
 
-        REGISTER diagnostic subsystem
         INITIALIZE command transport
         REGISTER Linux I2C adapter
-        REGISTER V4L2 device and optional subdevices
+        REGISTER V4L2 device, ADV7604/ADV7511 subdevices, and Media Controller links
         REGISTER ALSA PCM capture card
 
     WHEN userspace queues video buffers and starts V4L2 streaming:
         START_VIDEO_STREAM
 
-        IF legacy mode:
-            DETECT_BOARD_STATE
-            BOOTSTRAP_HARDWARE when required
-        ELSE:
-            Verify prior bootstrap and subdevice registration
-            Reconfigure ADV7604 format
+        Verify prior bootstrap and subdevice registration
+        Reconfigure ADV7604 format
+        Query ADV7604 input signal status when available
 
         Allocate and submit stream URBs to endpoint 0x83
 
@@ -1276,7 +1199,7 @@ END MAIN DRIVER FLOW
 | I2C transaction forms | Single register-prefixed write, or same-address register-write + read |
 | DMA reordering | 32 KiB pair assembled from two 16 KiB halves |
 | CryptoMemory | Protected opcodes are blocked |
-| Subdevice mode | `subdev_mode=0` legacy; `subdev_mode=1` ADV7604/ADV7511 graph |
+| Subdevice architecture | Unified unconditional ADV7604/ADV7511 Media Controller graph (zero module parameters) |
 
 ---
 

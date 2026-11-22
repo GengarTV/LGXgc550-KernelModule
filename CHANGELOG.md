@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.6.0] - 2026-11-22
+
+### Changed
+- **Hardware Bootstrap Modularization & Compaction (U2-B01):**
+  - Modularized the 2,615-operation hardware bootstrap into 27 explicit stages combining symbolic Class 1 board register definitions (PCA9539A, TLV320AIC3x, ECP3 FPGA) and compacted `gc550_init_blob[]` slices (`21,458 B` $\rightarrow$ `20,082 B`, `-1,376 B` dead board operations excised) with verified wire-sequence equivalence.
+- **Unified Unconditional Subdevice & Media Controller Architecture (U2-B02):**
+  - Removed the legacy `subdev_mode` module parameter and standalone `subdev_mode=0` code paths; the driver now loads with zero module parameters and binds `adv7604` and `adv7511-v4l2` unconditionally during USB probe.
+  - Added ADV7511 post-probe `s_power(1)` power restoration (`Main[0x41] = 0x10`) to restore transmitter power-on state after `adv7511_probe()`.
+  - Completed the Media Controller fan-out graph by linking `adv7604` Pad 6 (`SOURCE`) via `[ENABLED,IMMUTABLE]` links to both `AVerMedia GC550` Pad 0 (`/dev/videoX`) and `adv7511-v4l2` Pad 0 (`0` orphan entities).
+  - Added V4L2 pad validation (`pad == 0` required; non-zero pads return `-EINVAL`) to `VIDIOC_ENUM_DV_TIMINGS` and `VIDIOC_DV_TIMINGS_CAP`.
+- **Direct Capture-Path Wiring & Packaging Alignment (U2-B03):**
+  - Simplified 5 internal stream parser functions to single unified signatures and wired Bulk IN `0x83` `urb->context` directly to `struct gc550_dev *`.
+  - Updated `Kbuild`, `install.sh`, and `PKGBUILD` to the 10-file strict DKMS source manifest and removed the out-of-tree `-DCONFIG_GC550_DIAG=1` flag injection.
+
+### Removed
+- **Custom `GC550_DIAG` Diagnostic Subsystem (U2-B03, Remediates `REM-B03-001`):**
+  - Deleted `kernel/gc550-diag.c` and `kernel/gc550-diag.h` (`-1,441` lines), removing the custom 20.00 MiB probe-time `vzalloc()` ring buffer, custom debugfs interface, 45 `#ifdef CONFIG_GC550_DIAG` conditional blocks, and per-URB diagnostic atomics.
+  - Reduced compiled module ELF `.text` by `23.6%` (`83,145 B` $\rightarrow$ `63,495 B`), `.bss` to `0 B`, and in-memory module `coresize` from `118,784 B` to `94,208 B`.
+
+### Added
+- **Minimal Native Kernel Diagnostics (U2-B03):**
+  - Added 6 targeted `dev_dbg_ratelimited()` (`dynamic_debug`) sites for parser anomalies (unclosed-frame aborts, FX3 DMA swap votes, rejected invalid spans, SAV/EAV checksum mismatches, and EAV sequence mismatches).
+  - Added a 1-line GC550 stream/parser summary (`active`, `fmt`, `frames`, `audio_bytes`, `desyncs`, `swap`) to `VIDIOC_LOG_STATUS` alongside subdevice status output.
+
+### Verified
+- **U2-B01-S3 Gate 2 (Titan, `7.3.5-2-cachyos`, `srcversion: F322D907D7325C1D83A468C`):** Cold bootstrap (`1,146.62 ms`), 5 resolution gates (`1080p60`, `720p60`, `576p50`, `480p59.94`, `640x480p60`), and 5-minute `1080p60` + 48 kHz ALSA audio stress test passed.
+- **U2-B02-S3 Gate 2 Phases B–E (Titan, `7.3.5-2-cachyos`, `srcversion: 89F85911AAB5DAEF764B8EF`):** Parameter-free probe, `adv7511-v4l2: power on`, 3-entity / 2-link `[ENABLED,IMMUTABLE]` Media Controller graph, DV timing pad validation, and controlled `1920x1080p60 YUYV` native `1:1` `mpv` capture (`6,685` frames, `0` desyncs, `0` errors) passed.
+- **U2-B03-S2 Independent Audit & U2-B03-S3 Gate 2 (Titan, `7.3.5-2-cachyos`, `srcversion: 2CC7B9DF54D327C29B960DF`):** Independent audit verdict `ACCEPTED WITH FINDINGS` (`0` BLOCKER/HIGH/MEDIUM, `2` deferred LOW findings: `AUD-U2-B03-S2-001`, `AUD-U2-B03-S2-002`). Gate 2 hardware validation verdict `ACCEPTED` for parameter-free probe (warm reuse `Main[0x41]=0x10`), Media Controller graph, `VIDIOC_LOG_STATUS` stream summary, and controlled `1920x1080p60 YUYV` video-only capture (`~62.4 s`, `3,743` frames, `desyncs=0`, `swap_mode=0`, `0` errors, operator visual confirmation `"looking good"`, clean teardown `refcnt=1`). *(Note: Audio capture, multi-resolution capture, stress testing, and `v4l2-compliance` were not re-run under U2-B03-S3; the `0.6.0` version bump was applied after U2-B03-S3 without rebuilding `gc550.ko`.)*
+
+---
+
 ## [0.5.0] - 2026-11-17
 
 ### Added

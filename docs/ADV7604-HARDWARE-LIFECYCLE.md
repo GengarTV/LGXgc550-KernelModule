@@ -24,7 +24,7 @@ This document establishes the verified hardware lifecycle and register state pro
 
 ## 2. ADV7604 Cold-Bootstrap Register State
 
-The GC550 hardware is initialized over the Cypress FX3 USB-to-I2C bridge (`EP 0x01 OUT` / `EP 0x81 IN`) by replaying `gc550_init_blob` in `kernel/gc550-regtables.h` (originally 53,146 bytes across 6,576 steps; optimized in Phase 2C6D/E to 21,458 bytes across 2,615 steps without modifying any ADV7604 timing or scan registers; see [`PHASE2C6E-FINAL-REPORT.md`](PHASE2C6E-FINAL-REPORT.md)).
+The GC550 hardware is initialized over the Cypress FX3 USB-to-I2C bridge (`EP 0x01 OUT` / `EP 0x81 IN`) by executing the initialization sequence in `kernel/gc550-regtables.h` (originally 53,146 bytes across 6,576 steps; optimized in Phase 2C6D/E to 21,458 bytes across 2,615 steps; further modularized into 27 stages combining symbolic board definitions and a compacted 20,082-byte `gc550_init_blob` in U2-B01-S1/S2/S3 without modifying any ADV7604 timing or scan registers; see [`PHASE2C6E-FINAL-REPORT.md`](PHASE2C6E-FINAL-REPORT.md)).
 
 An exhaustive, read-only programmatic audit of all 6,576 operations confirmed the exact write points for the primary timing and mode registers:
 
@@ -186,3 +186,33 @@ Video capture was verified across all four supported broadcast resolutions using
 | 4 | `720x480` | 59.98 fps | 120 | **0** | **0** | Min 16, Max 235 (mean 67.84) | **0.00%** |
 
 In all modes, USB transport remained completely error-free, SAV/EAV frame parsing achieved 100% boundary alignment, and visual inspection in `mpv` confirmed correct color rendering and aspect ratio.
+
+---
+
+## 7. Unified Architecture Update (U2-B02-S1/S2 & Gate 2 Validation)
+
+Following Phase 2C5D and U2-B01, the U2-B02 remediation milestones removed the legacy `subdev_mode` conditional architecture and completed the Media Controller graph and ADV7511 power-state lifecycle (verified on Titan `7.3.5-2-cachyos` in **U2-B02-S3 Gate 2 Phases B, C, D & E**):
+
+- **Unconditional Subdevice Architecture (U2-B02-S1, Hardware Verified):** `subdev_mode` was removed (`0` module parameters). Hardware bootstrap runs during probe prior to registering `adv7604 13-0020` and `adv7511-v4l2 13-003d`.
+- **Completed Media Controller Fan-Out Graph (U2-B02-S2, Hardware Verified in Gate 2 Phase C):** `adv7511-v4l2 13-003d` is no longer an orphan entity. Both capture and passthrough links are established unconditionally from `adv7604` Pad 6 (`SOURCE`):
+  ```text
+  - entity 1: adv7604 13-0020 (7 pads, 2 links, 0 routes)
+              pad0..pad5: SINK
+              pad6: SOURCE
+                  -> "AVerMedia GC550":0 [ENABLED,IMMUTABLE]
+                  -> "adv7511-v4l2 13-003d":0 [ENABLED,IMMUTABLE]
+
+  - entity 9: adv7511-v4l2 13-003d (1 pad, 1 link, 0 routes)
+              pad0: SINK
+                  <- "adv7604 13-0020":6 [ENABLED,IMMUTABLE]
+
+  - entity 11: AVerMedia GC550 (1 pad, 1 link)
+               device node name /dev/video2
+               pad0: SINK
+                   <- "adv7604 13-0020":6 [ENABLED,IMMUTABLE]
+  ```
+- **ADV7511 Post-Probe Power Restoration (U2-B02-S2, Hardware Verified in Gate 2 Phase B/D):** After `adv7511_probe()` leaves `Main[0x41] = 0x50` (powered down), `gc550_subdev_init()` invokes `v4l2_subdev_call(dev->sd_adv7511, core, s_power, 1)` to restore `Main[0x41] = 0x10` (`VIDIOC_LOG_STATUS` confirmed `adv7511-v4l2 13-003d: power on`). Teardown I2C suppression during `rmmod` (`dev->disconnected = true` prior to `i2c_del_adapter()`) remains an open lifecycle observation (`REM-B02-004`).
+- **DV Timings Pad Validation & Open Compliance Items (Hardware Verified in Gate 2 Phase D):**
+  - `VIDIOC_ENUM_DV_TIMINGS` and `VIDIOC_DV_TIMINGS_CAP` accept `pad = 0` and reject non-zero pads (`pad = 1`, `pad = 2`, `pad = 0xffffffff`) with `-EINVAL`.
+  - **Empirically Confirmed (`REM-B02-002`):** `VIDIOC_ENUM_DV_TIMINGS` enumerates 73 timings directly from `adv7604`, whereas `VIDIOC_S_DV_TIMINGS` restricts acceptance to the 5 discrete sizes in `gc550_frame_sizes[]` (`15` accepted, `58` rejected with `-EINVAL`).
+  - **Observed (`REM-B02-003`):** `VIDIOC_ENUMINPUT` reports `Capabilities: 0x00000002 (DV timings)` and leaves `Status: 0x00000000` unconditionally without querying `adv7604` `g_input_status`.

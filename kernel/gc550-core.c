@@ -15,7 +15,6 @@ void gc550_dev_release(struct kref *ref)
 {
 	struct gc550_dev *dev = container_of(ref, struct gc550_dev, ref);
 
-	gc550_diag_free(dev);
 	usb_put_intf(dev->intf);
 	usb_put_dev(dev->udev);
 	kfree(dev);
@@ -64,13 +63,6 @@ static int gc550_probe(struct usb_interface *intf,
 
 	usb_set_intfdata(intf, dev);
 
-	ret = gc550_diag_init(dev);
-	if (ret < 0) {
-		dev_err(&intf->dev, "Failed to initialize diagnostic subsystem: %d\n",
-			ret);
-		goto err_put_usb;
-	}
-
 	ret = gc550_cmd_init(dev);
 	if (ret < 0)
 		goto err_put_usb;
@@ -95,8 +87,6 @@ static int gc550_probe(struct usb_interface *intf,
 			ret);
 		goto err_unreg_video;
 	}
-
-	gc550_diag_debugfs_init(dev);
 
 	dev_info(&intf->dev,
 		 "Registered %s as /dev/%s and ALSA capture card\n",
@@ -150,7 +140,6 @@ static void gc550_disconnect(struct usb_interface *intf)
 	mutex_unlock(&dev->v4l2_lock);
 
 	gc550_i2c_adapter_free(dev);
-	gc550_diag_debugfs_remove(dev);
 	gc550_cmd_free(dev);
 	kref_put(&dev->ref, gc550_dev_release);
 }

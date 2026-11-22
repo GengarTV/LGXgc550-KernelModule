@@ -189,3 +189,39 @@ Target subsystem: **Linux Media Subsystem (`linux-media@vger.kernel.org`)**, mai
   - Phase 2C6E validated cold bootstrap (measured 1,145.65 ms vs historical ~3.3 s baseline), 1080p60 video streaming (120 consecutive frames, 0 desyncs, 0 URB errors, 0 dropped frames, native 1:1 visual confirmation), and direct ALSA hardware audio capture (48 kHz stereo S16_LE, 10.0 s, 0 XRUNs). Full details documented in [`docs/PHASE2C6E-FINAL-REPORT.md`](docs/PHASE2C6E-FINAL-REPORT.md).
 - [ ] **4. Pass `scripts/checkpatch.pl --strict`**:
   - Verify zero style warnings against the target `media_stage` kernel tree before submitting the `[PATCH 0/2] media: usb: gc550: Add AVerMedia Live Gamer Extreme (GC550) driver` series to `linux-media@vger.kernel.org`.
+
+---
+
+## Upstream Remediation Progress (U2-B01, U2-B02 & U2-B03) & Consolidated Findings Registry
+
+*Baseline commit: `161337dfb0a6022f746c0b84deafbe7d685765af` (`v0.5.0`). All U2-B01, U2-B02, and U2-B03 implementation changes currently reside in the uncommitted working tree (`kernel/gc550-cmd.c`, `kernel/gc550-core.c`, `kernel/gc550-regtables.h`, `kernel/gc550-video.c`, `kernel/gc550.h`, `Kbuild`, `install.sh`, `PKGBUILD`; `kernel/gc550-diag.[ch]` deleted). Detailed execution records are archived externally under `~/Projects/AGY Documentation/`.*
+
+### Milestone Verification Matrix
+
+| Milestone | Scope | Verification Status | Evidence / Notes |
+| :--- | :--- | :--- | :--- |
+| **U2-B01 (S1, S2, S3)** | Symbolic Class 1 board register definitions, 27-stage dispatch decoupling, compacted 20,082-byte `gc550_init_blob` (`2,615` equivalent ops) | **Implemented, Build Verified, Static Equivalence Verified, Hardware Verified (S3 Gate 2 PASS)** | S3 artifact (`srcversion: F322D907D7325C1D83A468C`, `subdev_mode=1`) passed cold bootstrap (`1,146.62 ms`), 5 resolution gates (C1–C5), and 5-minute 1080p60 + 48 kHz audio stress test on Titan (`7.3.5-2-cachyos`). |
+| **U2-B02-S0** | Read-only dual-mode / Media Controller architecture assessment | **Completed (Static Audit Verified)** | Established remaining remediation scope on top of cumulative U2-B01 baseline. |
+| **U2-B02-S1** | Removal of `subdev_mode` parameter and legacy standalone `subdev_mode=0` branches; unconditional unified subdevice architecture | **Implemented, Build Verified, Hardware Verified (Gate 2 Phases B–E PASS)** | Loaded without parameters (`0` module parameters, `/sys/module/gc550/parameters` absent). |
+| **U2-B02-S2** | ADV7511 post-probe `s_power(1)`, immutable Media Controller fan-out link (`adv7604:6 -> adv7511-v4l2:0`), DV timing ioctl pad validation | **Implemented, Build Verified, Independently Audited, Hardware Verified (Gate 2 Phases B–E PASS)** | Independent static audit completed (`0` BLOCKER / `0` HIGH). Verified on live hardware in U2-B02-S3 Gate 2 Phases B–E (`srcversion: 89F85911AAB5DAEF764B8EF`). |
+| **U2-B02-S3 Gate 2 (Phases B, C, D, E)** | Physical hardware validation of unified U2-B02 artifact (`89F85911AAB5DAEF764B8EF`) on Titan (`7.3.5-2-cachyos`) | **Hardware Verified (Phases B, C, D & E PASS — Accepted)** | **Phase B:** Parameter-free load, unconditional subdevs, `adv7511-v4l2: power on`. **Phase C:** 3 entities, 2 `[ENABLED,IMMUTABLE]` links, `0` orphans. **Phase D:** Live `1920x1080p60` lock, pad `0` vs non-zero `-EINVAL` verified, `REM-B02-002` empirically confirmed. **Phase E:** Single `1920x1080p60 YUYV` `1:1` `mpv` capture approved (`"Looks perfect"`), `6,685` frames, `0` desyncs, `0` swap events, `0` USB/I2C/V4L2/parser errors, clean teardown. |
+| **U2-B03 (S0, S1, S2, S3)** | Complete removal of custom `GC550_DIAG` subsystem (`kernel/gc550-diag.[ch]`, 20 MiB probe allocation, 45 `#ifdef` blocks, custom debugfs); replaced with 6 `dev_dbg_ratelimited()` anomaly sites and `VIDIOC_LOG_STATUS` stream summary; direct `urb->context = dev` wiring; 10-file DKMS manifests | **Implemented, Build Verified (`W=1`), Independently Audited (`ACCEPTED WITH FINDINGS`), Hardware Validated (S3 Gate 2 `ACCEPTED`)** | Artifact `srcversion: 2CC7B9DF54D327C29B960DF` (`SHA-256: 45a00af8181b3c9bb22ced6ba08993ae03a98aca7205c7c64e154f48651e48e3`, `0` params, `coresize: 94,208 B`) passed parameter-free probe (warm reuse `Main[0x41]=0x10`), Media Controller graph, `VIDIOC_LOG_STATUS` summary, and controlled `1920x1080p60 YUYV` video-only capture (`~62.4 s`, `3,743` frames, `desyncs=0`, `swap_mode=0`, `0` errors, operator visual checkpoint `"looking good"`, clean teardown `refcnt=1`) on Titan (`7.3.5-2-cachyos`). |
+| **U2-B02 / U2-B03 Remaining Test Coverage** | Multi-resolution capture (`720p`/`576p`/`480p`/`640x480`), ALSA audio capture, combined A/V validation, OBS, stress test, cold USB power-cycle under S1, `v4l2-compliance` re-run, other kernels/hardware | **Not Tested** | Not included in U2-B02-S3 Phases B–E or U2-B03-S3 authorizations. |
+
+### Open, Remediated & Deferred Findings Registry
+
+| Finding ID | Severity | Status | Description |
+| :--- | :---: | :--- | :--- |
+| **REM-B01-001** | **LOW** | Open / Deferred (Static Audit) | Stage 11 naming mismatch (`adv_edid_hdmi_maps`) versus actual target I2C slave `0x4a`. |
+| **REM-B02-002** | **MEDIUM** | Open / Deferred — **Empirically Confirmed** (Gate 2 Phase D) | `VIDIOC_ENUM_DV_TIMINGS` delegates unfiltered to `adv7604` (`73` timings), while `VIDIOC_S_DV_TIMINGS` restricts acceptance to `gc550_frame_sizes[]` (`15` accepted, `58` rejected with `-EINVAL`). |
+| **REM-B02-003** | **LOW** | Open / Deferred — **Observed** (Gate 2 Phase D) | `VIDIOC_ENUMINPUT` does not query `adv7604` `g_input_status` (`inp->status` unconditionally `0`). |
+| **REM-B02-004** | **MEDIUM** | Open / Deferred — **Observed** (Gate 2 Phase B) | Lifecycle/teardown behavior involving `adv7511_remove()` and disconnected-state I2C suppression (`gc550_disconnect()` sets `dev->disconnected = true` before `i2c_del_adapter()`, causing `-ENODEV` I2C errors from `adv7511_remove()` during `rmmod`). |
+| **REM-B02-005** | **LOW** | Open / Deferred (Static Audit) | Comment/code alignment regarding `s_power(1)` return behavior. |
+| **REM-B02-006** | **LOW** | Open / Deferred (Static Audit) | `ADV7511 Main[0xA1]` versus `Main[0x41]` power-state observation. |
+| **REM-B03-001** | **HIGH** | **Remediated — Hardware Validated (U2-B03-S1/S2/S3 Gate 2 `ACCEPTED`)** | Custom `GC550_DIAG` subsystem completely removed (`-1,441` LOC, `-20 MiB` probe allocation, `0` debugfs/ring-buffer code); replaced with minimal `dev_dbg_ratelimited()` logging and `VIDIOC_LOG_STATUS` stream summary. |
+| **AUD-U2-B03-S2-001** | **LOW** | Open / Deferred (U2-B03-S2 Independent Audit) | Unlocked reads of `dev->parser.*` counters (`frame_sequence`, `audio_bytes`, `desync_count`, `swap_mode`) in `gc550_vidioc_log_status()` if invoked mid-stream. |
+| **AUD-U2-B03-S2-002** | **LOW** | Open / Deferred (U2-B03-S2 Independent Audit) | `gc550_vidioc_log_status()` uses `dev_info()` rather than `v4l2_info()`. |
+| **REM-B04-001** | **HIGH** | Open / Deferred (Static Audit) | Stale patch files under `docs/patches/`. |
+| **REM-B05-001** | **MEDIUM** | Open / Deferred (Static Audit) | Register table comments, provenance, and documentation consistency. |
+
+*(Next engineering milestone is not yet authorized.)*

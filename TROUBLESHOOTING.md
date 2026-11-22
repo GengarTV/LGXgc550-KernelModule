@@ -74,8 +74,9 @@ Per Linux driver development best practices, the installer does not forcefully u
 When the capture pipeline is idle, reload the module manually:
 ```bash
 sudo modprobe -r gc550
-sudo modprobe gc550 subdev_mode=1
+sudo modprobe gc550
 ```
+*(Note: The legacy `subdev_mode` module parameter was removed in U2-B02-S1; the unified V4L2 subdevice and Media Controller architecture is now active unconditionally. Remove any obsolete `options gc550 subdev_mode=...` entry from `/etc/modprobe.d/` if present.)*
 Or simply reboot your system.
 
 ---
@@ -117,20 +118,23 @@ This cleanly removes `/usr/src/gc550-<version>`, unregisters the package from DK
 
 ### Black Screen or "No Signal" in OBS Studio
 **Checklist:**
-1. **Check the hardware HDMI signal status in `dmesg`:**
-   When OBS opens the device, `gc550.ko` queries the internal `ADV7604` HDMI receiver and logs a line in `dmesg`:
+1. **Check the hardware HDMI signal status in `dmesg` and `v4l2-ctl --log-status`:**
+   When a stream starts, `gc550.ko` queries the bound `adv7604` subdevice input status and logs a line in `dmesg` (`ADV7604 input status: 0x00000000 (locked / signal OK)` when healthy). For full receiver and transmitter diagnostics (cable detection, TMDS lock, detected timings, HDCP status, and ADV7511 power state), run:
    ```bash
-   sudo dmesg | grep "HDMI Status"
+   v4l2-ctl -d /dev/avermedia-gc550 --log-status
+   sudo dmesg | grep -E "gc550|adv7604|adv7511" | tail -n 50
    ```
-   - Expected good output:
-     ```text
-     HDMI Status: cable=YES, signal=LOCKED (1920x1080p, HDMI, HDCP=NO, TMDS=148MHz)
-     ```
-   - If **`cable=NO`**: Check the HDMI IN cable from your console/PC/camera.
-   - If **`HDCP=YES`**: The HDMI source is encrypting the video with **HDCP** (High-bandwidth Digital Content Protection). Neither the official Windows driver nor this driver captures HDCP-protected streams:
+   - Expected healthy `adv7604` output includes:
+     - `Cable detected (+5V power) port A: Yes`
+     - `TMDS signal detected: true`, `TMDS signal locked: true`, `STDI locked: true`, `CP locked: true`
+     - `HDCP encrypted content: false`
+     - `Detected format: 1920x1080p60.00` (matching your source)
+   - Expected healthy `adv7511-v4l2` output includes `power on`.
+   - If **cable is not detected (`port A: No`)**: Check the HDMI IN cable from your console/PC/camera.
+   - If **`HDCP encrypted content: true`**: The HDMI source is encrypting the video with **HDCP** (High-bandwidth Digital Content Protection). Neither the official Windows driver nor this driver captures HDCP-protected streams:
      - **PS4 / PS5:** Go to *Settings → System → HDMI → Enable HDCP* and toggle it **OFF**.
      - **MacBooks / Apple TV:** macOS frequently forces HDCP on HDMI outputs.
-   - If **`signal=NONE`**: Check that the source is active, the HDMI cable is connected to **HDMI IN**, and HDR is disabled.
+   - If **TMDS/STDI/CP is not locked**: Check that the source is active, the HDMI cable is connected to **HDMI IN**, and HDR is disabled.
    - If the signal is locked but OBS is black, set the OBS V4L2 source's **Resolution/FPS Type** to **Custom** and choose the size matching the input. Supported sizes are `1920x1080`, `1280x720`, `720x576`, `720x480`, and `640x480`; the driver does not switch the V4L2 format automatically when the source timing changes.
    - **V4L2 Format vs DV Timings:** Note that `v4l2-ctl --set-fmt-video` configures the capture buffer size on `/dev/videoX`, but does **not** program the ADV7604 receiver timings. To query or update the hardware timing on the ADV7604 receiver:
      ```bash
